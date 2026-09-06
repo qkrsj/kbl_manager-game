@@ -51,7 +51,8 @@ export function toLineupPlayer(p: RosterPlayer): LineupPlayer {
   };
 }
 
-export function requiredForeignCount(quarter: 1 | 2 | 3 | 4): number {
+/** 5 이상은 연장전(OT)으로 취급 — Q1/Q4와 동일하게 용병 1명 규칙 적용 */
+export function requiredForeignCount(quarter: number): number {
   return quarter === 2 || quarter === 3 ? 2 : 1;
 }
 
@@ -93,7 +94,7 @@ function weightedSampleWithoutReplacement<T>(
  */
 export function selectLineup(
   teamRoster: LineupPlayer[],
-  quarter: 1 | 2 | 3 | 4
+  quarter: number
 ): LineupPlayer[] {
   const foreignPool = teamRoster.filter((p) => p.isForeign);
   const domesticPool = teamRoster.filter((p) => !p.isForeign);
@@ -116,5 +117,16 @@ export function selectLineup(
     selectedDomestic.push(...picked);
   });
 
-  return [...selectedForeign, ...selectedDomestic];
+  // ⚠️ 안전장치: 파울아웃 등으로 특정 포지션 그룹이 비어 5명을 못 채우면,
+  // 남은 인원(국내+용병 무관, 이미 뽑힌 선수 제외)에서 출전비중 가중으로 보충
+  const selectedSoFar = [...selectedForeign, ...selectedDomestic];
+  if (selectedSoFar.length < 5) {
+    const remaining = teamRoster.filter((p) => !selectedSoFar.includes(p));
+    const extra = weightedSampleWithoutReplacement(
+      remaining, (p) => p.perGameMin, 5 - selectedSoFar.length
+    );
+    selectedSoFar.push(...extra);
+  }
+
+  return selectedSoFar;
 }
