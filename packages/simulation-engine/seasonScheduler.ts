@@ -1,9 +1,15 @@
 /**
- * KBL Manager — 시즌 스케줄러 (v0)
+ * KBL Manager — 시즌 스케줄러 (v0.2)
  *
- * 10개 팀이 서로 정해진 횟수(홈/원정 절반씩)만큼 맞붙는 라운드로빈 일정을 생성하고,
- * 전체 시즌을 시뮬레이션해서 팀 순위표와 게임 로그를 만든다.
- * 실제 KBL 정규시즌 포맷(팀당 54경기 = 9개 상대팀 × 6번)을 기본값으로 사용.
+ * v0.2 변경사항:
+ *  - 라운드 생성 방식을 "원형법(circle method)"으로 교체. 매 라운드마다 10팀이
+ *    전부 동시에 1경기씩 뛰는 정식 라운드로빈 구조(9라운드×6사이클=54라운드=팀당54경기).
+ *    홈/원정은 사이클 짝/홀에 따라 반전시켜 모든 팀쌍이 정확히 홈3/원정3이 되도록 보장.
+ *  - 각 라운드에 실제 날짜(시즌 시작일로부터 경과일)를 부여. 라운드 간격은 대부분
+ *    2~3일이지만 15% 확률로 1일(백투백)도 발생하도록 함.
+ *  - 체력(피로) 시스템: 직전 경기로부터 휴식일이 2일 미만(백투백)이면, 그 경기에서
+ *    슈팅 계열 실제확률(paintAccuracy 등)에 페널티를 적용. stamina 능력치가 낮을수록
+ *    페널티가 더 크게 걸림 (체력 좋은 선수는 백투백에도 덜 흔들림).
  */
 
 import { simulateGame, GameResult, SimPlayer } from "./gameSimulator";
@@ -11,37 +17,56 @@ export { SimPlayer };
 
 export interface ScheduledGame {
   round: number;
+  day: number;
   home: string;
   away: string;
 }
 
-function shuffle<T>(arr: T[]): void {
-  for (let i = arr.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [arr[i], arr[j]] = [arr[j], arr[i]];
+function circleMethodSingleRoundRobin(teams: string[]): { home: string; away: string }[][] {
+  const n = teams.length;
+  if (n % 2 !== 0) throw new Error("원형법은 짝수 팀 수만 지원합니다 (부전승 미구현)");
+  const arr = [...teams];
+  const rounds: { home: string; away: string }[][] = [];
+
+  for (let r = 0; r < n - 1; r++) {
+    const roundPairs: { home: string; away: string }[] = [];
+    for (let i = 0; i < n / 2; i++) {
+      roundPairs.push({ home: arr[i], away: arr[n - 1 - i] });
+    }
+    rounds.push(roundPairs);
+    const last = arr[n - 1];
+    for (let i = n - 1; i > 1; i--) arr[i] = arr[i - 1];
+    arr[1] = last;
   }
+  return rounds;
 }
 
-/**
- * 각 팀 쌍이 timesEach번 맞붙는 일정 생성 (홈/원정 절반씩 배분, 홀수면 마지막 한 번은
- * 먼저 나열된 팀이 홈). 실제 달력/요일 배정은 v0에서 생략하고 무작위 순서만 부여.
- */
 export function generateRoundRobinSchedule(teams: string[], timesEach: number): ScheduledGame[] {
+  const singleCycle = circleMethodSingleRoundRobin(teams);
   const games: ScheduledGame[] = [];
-  for (let i = 0; i < teams.length; i++) {
-    for (let j = i + 1; j < teams.length; j++) {
-      for (let k = 0; k < timesEach; k++) {
-        const teamIIsHome = k % 2 === 0;
-        games.push({
-          round: 0,
-          home: teamIIsHome ? teams[i] : teams[j],
-          away: teamIIsHome ? teams[j] : teams[i],
-        });
+
+  let roundCounter = 0;
+  let dayCounter = 0;
+
+  for (let cycle = 0; cycle < timesEach; cycle++) {
+    const flip = cycle % 2 === 1;
+    for (const roundPairs of singleCycle) {
+      roundCounter++;
+      if (roundCounter > 1) {
+        const r = Math.random();
+        const gap = r < 0.15 ? 1 : r < 0.6 ? 2 : 3;
+        dayCounter += gap;
       }
+      roundPairs.forEach((pair) => {
+        games.push({
+          round: roundCounter,
+          day: dayCounter,
+          home: flip ? pair.away : pair.home,
+          away: flip ? pair.home : pair.away,
+        });
+      });
     }
   }
-  shuffle(games);
-  games.forEach((g, idx) => (g.round = idx + 1));
   return games;
 }
 
@@ -56,11 +81,14 @@ export interface TeamStanding {
 
 export interface SeasonGameLog {
   round: number;
+  day: number;
   home: string;
   away: string;
   homeScore: number;
   awayScore: number;
   wentToOT: boolean;
+  homeRestDays: number | null;
+  awayRestDays: number | null;
 }
 
 export interface SeasonResult {
@@ -73,11 +101,25 @@ function emptyStanding(team: string): TeamStanding {
   return { team, wins: 0, losses: 0, pointsFor: 0, pointsAgainst: 0, gamesPlayed: 0 };
 }
 
-/**
- * 전체 시즌 시뮬레이션.
- * @param teamRosters 팀명 -> SimPlayer[] (시즌 내내 고정, 부상/이적 등은 v0에서 미반영)
- * @param schedule generateRoundRobinSchedule()로 만든 일정
- */
+function applyFatigue(roster: SimPlayer[], restDays: number | null): SimPlayer[] {
+  if (restDays === null || restDays >= 2) return roster;
+
+  return roster.map((p) => {
+    const staminaFactor = p.attrs.stamina / 100;
+    const penalty = 0.85 + staminaFactor * 0.13;
+    return {
+      ...p,
+      internals: {
+        ...p.internals,
+        paintAccuracy: p.internals.paintAccuracy * penalty,
+        midAccuracy: p.internals.midAccuracy * penalty,
+        threeAccuracy: p.internals.threeAccuracy * penalty,
+        ftAccuracy: p.internals.ftAccuracy * penalty,
+      },
+    };
+  });
+}
+
 export function runSeason(
   teamRosters: Map<string, SimPlayer[]>,
   schedule: ScheduledGame[]
@@ -90,6 +132,7 @@ export function runSeason(
     string,
     { PTS: number; AST: number; REB: number; TOV: number; BLK: number; PF: number; games: number }
   >();
+  const lastPlayDay = new Map<string, number>();
 
   function accumulatePlayer(name: string, box: { PTS: number; AST: number; REB: number; TOV: number; BLK: number; PF: number }) {
     let cur = playerSeasonTotals.get(name);
@@ -106,20 +149,33 @@ export function runSeason(
     cur.games += 1;
   }
 
-  for (const game of schedule) {
-    const homeRoster = teamRosters.get(game.home);
-    const awayRoster = teamRosters.get(game.away);
-    if (!homeRoster || !awayRoster) continue;
+  const orderedSchedule = [...schedule].sort((a, b) => a.round - b.round);
+
+  for (const game of orderedSchedule) {
+    const homeRosterBase = teamRosters.get(game.home);
+    const awayRosterBase = teamRosters.get(game.away);
+    if (!homeRosterBase || !awayRosterBase) continue;
+
+    const homeLastDay = lastPlayDay.get(game.home);
+    const awayLastDay = lastPlayDay.get(game.away);
+    const homeRestDays = homeLastDay === undefined ? null : game.day - homeLastDay;
+    const awayRestDays = awayLastDay === undefined ? null : game.day - awayLastDay;
+
+    const homeRoster = applyFatigue(homeRosterBase, homeRestDays);
+    const awayRoster = applyFatigue(awayRosterBase, awayRestDays);
 
     const result: GameResult = simulateGame(homeRoster, awayRoster, game.home, game.away);
 
     gameLogs.push({
       round: game.round,
+      day: game.day,
       home: game.home,
       away: game.away,
       homeScore: result.home.totalScore,
       awayScore: result.away.totalScore,
       wentToOT: result.wentToOT,
+      homeRestDays,
+      awayRestDays,
     });
 
     const homeStanding = standingsMap.get(game.home)!;
@@ -140,6 +196,9 @@ export function runSeason(
 
     result.home.players.forEach((box) => accumulatePlayer(box.name, box));
     result.away.players.forEach((box) => accumulatePlayer(box.name, box));
+
+    lastPlayDay.set(game.home, game.day);
+    lastPlayDay.set(game.away, game.day);
   }
 
   const standings = Array.from(standingsMap.values()).sort((a, b) => b.wins - a.wins);

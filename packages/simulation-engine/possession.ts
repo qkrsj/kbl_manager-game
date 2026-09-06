@@ -34,6 +34,7 @@ export interface DisplayAttrs {
   defensiveRebounding: number;
   offensiveRebounding: number;
   strength: number;
+  stamina: number;
 }
 
 /** 시뮬레이션 전용 내부값 — 화면에 노출 안 함. 전부 실제 확률(0~1) */
