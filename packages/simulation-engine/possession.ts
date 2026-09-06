@@ -152,7 +152,10 @@ export function simulatePossession(
   // 1. 공격 시작: 가드 중 ballHandling 최고, 없으면 전체 중 최고
   const guards = offense.filter((p) => p.positionGroup === "G");
   const startingPool = guards.length > 0 ? guards : offense;
-  let holder = startingPool.reduce((a, b) => (b.attrs.ballHandling > a.attrs.ballHandling ? b : a));
+  // ⚠️ 이전엔 ballHandling 최고 1명으로 고정 -> 그 선수가 "첫 터치 프리미엄"을 매번 독점해서
+  // usage 낮은 선수가 usage 높은 선수보다 슛 점유율이 더 높아지는 왜곡 발생 (실측 검증 중 발견:
+  // 김낙현 usagePct80이 안영준90/워니99보다 슛시도 훨씬 많았음). ballHandling 가중 확률추첨으로 변경.
+  let holder = weightedPick(startingPool, (p) => Math.max(1, p.attrs.ballHandling));
 
   let lastPasser: SimPlayer | null = null;
   let assister: string | undefined;
