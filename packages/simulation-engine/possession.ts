@@ -69,7 +69,7 @@ export interface PossessionResult {
 // 상수 (실제 리그 평균으로 추후 캘리브레이션 예정)
 // ============================================================
 
-const BASE_TURNOVER_PASS = 0.08;
+const BASE_TURNOVER_PASS = 0.02;
 const BASE_TURNOVER_DRIVE = 0.12;
 const BASE_FOUL_DRIVE = 0.15;
 const BASE_SHOT_FOUL = { paint: 0.20, mid: 0.10, three: 0.05 };
@@ -161,8 +161,14 @@ export function simulatePossession(
   let assister: string | undefined;
 
   for (let chain = 0; chain < MAX_CHAIN_LENGTH; chain++) {
-    const shotAttemptProb =
+    // ⚠️ 원래 공식(선형)은 평균적인 선수(usage/PTS 퍼센타일 50)도 즉시슛확률 50%가 나와서,
+    // 득점의 57.8%가 패스 0회(첫터치 즉시슛)로 끝나는 비현실적 결과가 나왔다
+    // (실제 리그는 어시스트 비율 55~65%, 즉 패스 없는 고립 슛은 소수여야 함).
+    // 지수(1.8)를 줘서 평균~중간 수준 선수는 확률을 크게 낮추고, 진짜 고usage/고득점력
+    // 선수만 여전히 높은 즉시슛확률을 갖도록 완화 (실측 검증 중 발견).
+    const rawFactor =
       (holder.internals.usagePercentile / 100) * 0.3 + (holder.internals.ptsPercentile / 100) * 0.7;
+    const shotAttemptProb = Math.pow(rawFactor, 9);
 
     if (rand() < shotAttemptProb || chain === MAX_CHAIN_LENGTH - 1) {
       // ---- 드라이브(돌파) 단계: 슛 시도 전에 반드시 거침 ----
