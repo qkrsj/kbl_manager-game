@@ -12,8 +12,8 @@
  *    페널티가 더 크게 걸림 (체력 좋은 선수는 백투백에도 덜 흔들림).
  */
 
-import { simulateGame, GameResult, SimPlayer } from "./gameSimulator";
-export { SimPlayer };
+import { simulateGame, GameResult, SimPlayer, PlayerBoxScore } from "./gameSimulator";
+export type { SimPlayer, PlayerBoxScore };
 
 export interface ScheduledGame {
   round: number;
@@ -89,6 +89,8 @@ export interface SeasonGameLog {
   wentToOT: boolean;
   homeRestDays: number | null;
   awayRestDays: number | null;
+  homeBoxScores: PlayerBoxScore[];
+  awayBoxScores: PlayerBoxScore[];
 }
 
 export interface SeasonResult {
@@ -176,6 +178,8 @@ export function runSeason(
       wentToOT: result.wentToOT,
       homeRestDays,
       awayRestDays,
+      homeBoxScores: Array.from(result.home.players.values()),
+      awayBoxScores: Array.from(result.away.players.values()),
     });
 
     const homeStanding = standingsMap.get(game.home)!;
