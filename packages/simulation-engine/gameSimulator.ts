@@ -13,6 +13,7 @@
 
 import { selectLineup } from "./lineup";
 import { simulatePossession, PossessionResult, SimPlayer } from "./possession";
+export type { SimPlayer };
 
 const POSSESSIONS_PER_QUARTER_PER_TEAM = 18;
 const POSSESSIONS_PER_OT_PER_TEAM = 9; // 연장 5분 = 정규 쿼터(10분)의 절반

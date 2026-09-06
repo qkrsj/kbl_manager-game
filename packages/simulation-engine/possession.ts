@@ -71,8 +71,8 @@ export interface PossessionResult {
 
 const BASE_TURNOVER_PASS = 0.02;
 const BASE_TURNOVER_DRIVE = 0.12;
-const BASE_FOUL_DRIVE = 0.15;
-const BASE_SHOT_FOUL = { paint: 0.20, mid: 0.10, three: 0.05 };
+const BASE_FOUL_DRIVE = 0.10;
+const BASE_SHOT_FOUL = { paint: 0.14, mid: 0.07, three: 0.035 };
 const SWITCH_PENALTY = 0.7;
 const MAX_CHAIN_LENGTH = 6;
 
@@ -168,7 +168,11 @@ export function simulatePossession(
     // 선수만 여전히 높은 즉시슛확률을 갖도록 완화 (실측 검증 중 발견).
     const rawFactor =
       (holder.internals.usagePercentile / 100) * 0.3 + (holder.internals.ptsPercentile / 100) * 0.7;
-    const shotAttemptProb = Math.pow(rawFactor, 9);
+    // ⚠️ 상한선 없이는 usagePct가 극단값(99+)인 선수가 즉시슛확률 97%+까지 치솟아서
+    // "패스도 몰리고 + 받으면 거의 다 쏨"의 이중 몰림이 발생 (실측 검증 중 발견 —
+    // 시즌 시뮬레이션에서 패리스 배스 45.7점/경기로 비현실적으로 나온 원인).
+    // 아무리 볼독점형 선수여도 매번 쏘지는 않는다는 하한을 두기 위해 0.65로 상한 설정.
+    const shotAttemptProb = Math.min(0.45, Math.pow(rawFactor, 9));
 
     if (rand() < shotAttemptProb || chain === MAX_CHAIN_LENGTH - 1) {
       // ---- 드라이브(돌파) 단계: 슛 시도 전에 반드시 거침 ----
