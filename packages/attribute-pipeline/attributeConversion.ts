@@ -321,38 +321,53 @@ function rawBallHandlingMetrics(stat: SeasonStatLine, avg: LeagueAverages) {
  * 극소표본(가비지타임 1경기 등)이 보정을 거의 안 받고 상위권에 올라오는
  * 버그가 생긴다 (실측 검증 중 발견 — steal/shotBlocking 상위권 오염).
  */
-function rawPassingMetric(stat: SeasonStatLine, avg: LeagueAverages) {
+/**
+ * ⚠️ 최소 표본 기준: 시즌 총 출장분(Min×G)이 5분 미만이면 null 반환 (호출부에서 중립값 50 처리).
+ * 리바운드/블록 등은 소수의 빅맨이 끌어올리는 오른쪽 치우침 분포라, 산술평균(리그평균)
+ * 자체가 이미 중위값보다 높은 위치에 있다. 그래서 극소표본 선수가 베이지안 보정으로
+ * "평균"에 수렴해도 실제로는 50퍼센타일이 아니라 60~80퍼센타일로 밀려 올라가는 왜곡이
+ * 생긴다 (실측 검증 중 발견 — BLK=0/DREB=0인데 60점대로 나오는 선수들 확인됨).
+ * 판단 근거 자체가 없는 극소표본은 계산을 아예 건너뛰고 중립값으로 처리하는 게 안전하다.
+ */
+const MIN_SEASON_MINUTES_THRESHOLD = 5;
+
+function rawPassingMetric(stat: SeasonStatLine, avg: LeagueAverages): number | null {
   const astSeasonTotal = seasonTotal(stat.AST, stat.G);
   const minSeasonTotal = seasonTotal(stat.Min, stat.G);
+  if (minSeasonTotal < MIN_SEASON_MINUTES_THRESHOLD) return null;
   const k = eventBasedK(avg.perMinAst);
   return bayesianPerMinute(astSeasonTotal, minSeasonTotal, k, avg.perMinAst);
 }
 
-function rawStealMetric(stat: SeasonStatLine, avg: LeagueAverages) {
+function rawStealMetric(stat: SeasonStatLine, avg: LeagueAverages): number | null {
   const stlSeasonTotal = seasonTotal(stat.STL, stat.G);
   const minSeasonTotal = seasonTotal(stat.Min, stat.G);
+  if (minSeasonTotal < MIN_SEASON_MINUTES_THRESHOLD) return null;
   const k = eventBasedK(avg.perMinStl);
   return bayesianPerMinute(stlSeasonTotal, minSeasonTotal, k, avg.perMinStl);
 }
 
-function rawBlockMetric(stat: SeasonStatLine, avg: LeagueAverages) {
+function rawBlockMetric(stat: SeasonStatLine, avg: LeagueAverages): number | null {
   const blkSeasonTotal = seasonTotal(stat.BLK, stat.G);
   const minSeasonTotal = seasonTotal(stat.Min, stat.G);
+  if (minSeasonTotal < MIN_SEASON_MINUTES_THRESHOLD) return null;
   const k = eventBasedK(avg.perMinBlk);
   return bayesianPerMinute(blkSeasonTotal, minSeasonTotal, k, avg.perMinBlk);
 }
 
-function rawDrebMetric(stat: SeasonStatLine, avg: LeagueAverages) {
+function rawDrebMetric(stat: SeasonStatLine, avg: LeagueAverages): number | null {
   const drebSeasonTotal = seasonTotal(stat.DREB, stat.G);
   const minSeasonTotal = seasonTotal(stat.Min, stat.G);
+  if (minSeasonTotal < MIN_SEASON_MINUTES_THRESHOLD) return null;
   const k = eventBasedK(avg.perMinDreb);
   return bayesianPerMinute(drebSeasonTotal, minSeasonTotal, k, avg.perMinDreb);
 }
 
 /** offensiveRebounding: defensiveRebounding과 완전히 동일한 방식 */
-function rawOrebMetric(stat: SeasonStatLine, avg: LeagueAverages) {
+function rawOrebMetric(stat: SeasonStatLine, avg: LeagueAverages): number | null {
   const orebSeasonTotal = seasonTotal(stat.OREB, stat.G);
   const minSeasonTotal = seasonTotal(stat.Min, stat.G);
+  if (minSeasonTotal < MIN_SEASON_MINUTES_THRESHOLD) return null;
   const k = eventBasedK(avg.perMinOreb);
   return bayesianPerMinute(orebSeasonTotal, minSeasonTotal, k, avg.perMinOreb);
 }
@@ -361,9 +376,10 @@ function rawOrebMetric(stat: SeasonStatLine, avg: LeagueAverages) {
  * GD(굿디펜스) — 4개 수비속성(steal/shotBlocking/defensiveRebounding/offensiveRebounding)에
  * 공통 보너스(0.15 가중)로 얹기 위한 지표. 독립 속성으로 만들지 않고 보정 레이어로만 사용.
  */
-function rawGDMetric(stat: SeasonStatLine, avg: LeagueAverages) {
+function rawGDMetric(stat: SeasonStatLine, avg: LeagueAverages): number | null {
   const gdSeasonTotal = seasonTotal(stat.GD, stat.G);
   const minSeasonTotal = seasonTotal(stat.Min, stat.G);
+  if (minSeasonTotal < MIN_SEASON_MINUTES_THRESHOLD) return null;
   const k = eventBasedK(avg.perMinGD);
   return bayesianPerMinute(gdSeasonTotal, minSeasonTotal, k, avg.perMinGD);
 }
@@ -532,12 +548,12 @@ export function computeLeagueDerivedAttributes(
   const threeRaw = new Map<string, { corrected3P: number; per3PA: number }>();
   const ftRaw = new Map<string, { correctedFT: number; perGameFTA: number }>();
   const bhRaw = new Map<string, { correctedToRatio: number; correctedAstPerUsage: number }>();
-  const passingRaw = new Map<string, number>();
-  const stealRaw = new Map<string, number>();
-  const blockRaw = new Map<string, number>();
-  const drebRaw = new Map<string, number>();
-  const orebRaw = new Map<string, number>();
-  const gdRaw = new Map<string, number>();
+  const passingRaw = new Map<string, number | null>();
+  const stealRaw = new Map<string, number | null>();
+  const blockRaw = new Map<string, number | null>();
+  const drebRaw = new Map<string, number | null>();
+  const orebRaw = new Map<string, number | null>();
+  const gdRaw = new Map<string, number | null>();
   const trendRaw = new Map<string, TrendRawResult>();
   const staminaRaw = new Map<string, number>();
   const injuryRaw = new Map<string, number | null>();
@@ -580,12 +596,12 @@ export function computeLeagueDerivedAttributes(
   const perGameFTAArr = arr(ftRaw, (v) => v.perGameFTA);
   const toRatioArr = arr(bhRaw, (v) => v.correctedToRatio);
   const astPerUsageArr = arr(bhRaw, (v) => v.correctedAstPerUsage);
-  const passingArr = Array.from(passingRaw.values());
-  const stealArr = Array.from(stealRaw.values());
-  const blockArr = Array.from(blockRaw.values());
-  const drebArr = Array.from(drebRaw.values());
-  const orebArr = Array.from(orebRaw.values());
-  const gdArr = Array.from(gdRaw.values());
+  const passingArr = Array.from(passingRaw.values()).filter((v): v is number => v !== null);
+  const stealArr = Array.from(stealRaw.values()).filter((v): v is number => v !== null);
+  const blockArr = Array.from(blockRaw.values()).filter((v): v is number => v !== null);
+  const drebArr = Array.from(drebRaw.values()).filter((v): v is number => v !== null);
+  const orebArr = Array.from(orebRaw.values()).filter((v): v is number => v !== null);
+  const gdArr = Array.from(gdRaw.values()).filter((v): v is number => v !== null);
 
   const slopeArr = Array.from(trendRaw.values())
     .filter((v): v is { kind: "slope"; value: number } => v.kind === "slope")
@@ -662,15 +678,19 @@ export function computeLeagueDerivedAttributes(
       percentile(astPerUsageArr, bh.correctedAstPerUsage) * 0.6
     );
 
-    const passing = toAttributeScale(percentile(passingArr, pass));
+    const passing = toAttributeScale(pass === null ? 50 : percentile(passingArr, pass));
+
     // GD(굿디펜스) 보너스: steal에만 적용.
     // shotBlocking/defensiveRebounding은 빅맨 편향 속성인데 GD는 가드 편향 스탯이라
     // 함께 블렌딩하면 원래 잘하던 빅맨 점수가 오히려 깎이는 역효과가 있어 제외 (실측 검증 중 발견)
-    const gdPct = percentile(gdArr, gd);
-    const steal = toAttributeScale(percentile(stealArr, stl) * 0.85 + gdPct * 0.15);
-    const shotBlocking = toAttributeScale(percentile(blockArr, blk));
-    const defensiveRebounding = toAttributeScale(percentile(drebArr, dreb));
-    const offensiveRebounding = toAttributeScale(percentile(orebArr, oreb));
+    // ⚠️ 최소표본 미달(null)이면 베이지안 보정을 거치지 않고 중립값 50을 직접 사용
+    //    (산술평균 자체가 치우친 분포라 "평균 수렴"이 곧 50퍼센타일을 의미하지 않기 때문 — 실측 검증 중 발견)
+    const stealPct = stl === null ? 50 : percentile(stealArr, stl);
+    const gdPct = gd === null ? 50 : percentile(gdArr, gd);
+    const steal = toAttributeScale(stealPct * 0.85 + gdPct * 0.15);
+    const shotBlocking = toAttributeScale(blk === null ? 50 : percentile(blockArr, blk));
+    const defensiveRebounding = toAttributeScale(dreb === null ? 50 : percentile(drebArr, dreb));
+    const offensiveRebounding = toAttributeScale(oreb === null ? 50 : percentile(orebArr, oreb));
 
     // stamina: 경기당 출장시간(Min) 퍼센타일 단독 (거친 근사치)
     const staminaRawVal = staminaRaw.get(p.playerId)!;
