@@ -242,6 +242,45 @@ app.put("/api/franchise/tactics", async (req, res) => {
   }
 });
 
+/** 전체 팀 목록 (팀 선택 화면용) */
+app.get("/api/teams", async (_req, res) => {
+  try {
+    const result = await pool.query(`SELECT id, name FROM teams ORDER BY name`);
+    res.json(result.rows);
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+/**
+ * 유저 팀 선택/변경. 시즌 시작 전(current_round=0)에만 허용 —
+ * 이미 경기를 진행했으면 중간에 팀을 바꾸는 건 v0에서 지원 안 함.
+ * body: { teamId }
+ */
+app.post("/api/franchise/select-team", async (req, res) => {
+  try {
+    const franchiseRes = await pool.query(`SELECT id, current_round FROM franchise LIMIT 1`);
+    if (franchiseRes.rows.length === 0) {
+      res.status(404).json({ error: "franchise not found (run seed first)" });
+      return;
+    }
+    const franchise = franchiseRes.rows[0];
+    if (franchise.current_round > 0) {
+      res.status(400).json({ error: "이미 시즌이 진행되어 팀을 변경할 수 없습니다" });
+      return;
+    }
+    const { teamId } = req.body;
+    if (!teamId) {
+      res.status(400).json({ error: "teamId가 필요합니다" });
+      return;
+    }
+    await pool.query(`UPDATE franchise SET user_team_id = $1 WHERE id = $2`, [teamId, franchise.id]);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`[server] KBL Manager API listening on port ${PORT}`);
 });
