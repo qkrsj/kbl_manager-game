@@ -164,10 +164,15 @@ function linearRegressionSlope(values: number[]): number {
   return den === 0 ? 0 : num / den;
 }
 
-/** 0~100 퍼센타일 값을 최종 게임 스케일(0~99)로 클램프/변환 */
+/**
+ * 0~100 퍼센타일 값을 최종 게임 스케일(50~99)로 클램프/변환.
+ * ⚠️ v0.6: 기존 0~99 스케일에서 50~99로 변경. 리그 최하위(0퍼센타일)도 50점을
+ * 보장하니, speed처럼 극단값이 비현실적으로 낮게 나오던 문제가 스케일 자체에서
+ * 자동으로 해결됨 (개별 속성마다 하한선/편차압축 같은 별도 보정이 필요 없어짐).
+ */
 function toAttributeScale(percentile0to100: number): number {
   const clamped = Math.max(0, Math.min(100, percentile0to100));
-  return Math.round((clamped / 100) * 99);
+  return Math.round(50 + (clamped / 100) * 49);
 }
 
 // ============================================================
@@ -711,17 +716,16 @@ export function computeLeagueDerivedAttributes(
     );
 
     // speed: 100 - (키퍼센타일×0.5 + 몸무게퍼센타일×0.5) — 크고 무거울수록 느리다는 거친 전제.
-    // ⚠️ 하한선 없이는 리그 내 극단적으로 크고 무거운 선수(99퍼센타일급 용병 빅맨)가
-    // speed 한 자릿수까지 나옴 — 아무리 대형 빅맨이어도 프로 운동선수인 이상 이 정도로
-    // 느릴 순 없다는 지적으로 발견. 하한선 25로 극단값만 구제하고, 평균 근처 선수들의
-    // 분포는 원래 설계(키/몸무게 절반씩 반영) 그대로 유지.
-    // 데이터 없으면 중립값 50.
+    // 전역 스케일이 이제 50~99라서, 극단적으로 크고 무거운 선수도 자동으로 50 밑으로
+    // 안 내려감 — 이전엔 이 문제를 speed 공식 자체에서 편차압축/하한선으로 따로
+    // 처리했었는데, 전역 스케일 변경으로 그 보정이 불필요해져서 원래의 단순한 공식으로 복원.
+    // 데이터 없으면 중립값(퍼센타일 50 -> 스케일변환후 약 75점).
     const speedRawVal = speedRaw.get(p.playerId) ?? null;
     const speed = toAttributeScale(
       speedRawVal === null
         ? 50
-        : Math.max(25, 100 - (percentile(heightArr, speedRawVal.height) * 0.5 +
-                               percentile(speedWeightArr, speedRawVal.weight) * 0.5))
+        : 100 - (percentile(heightArr, speedRawVal.height) * 0.5 +
+                 percentile(speedWeightArr, speedRawVal.weight) * 0.5)
     );
 
     // potential — 용병(국적 KOR 아님)은 개념 자체가 안 맞아 null 처리
