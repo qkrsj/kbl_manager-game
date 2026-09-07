@@ -1,4 +1,8 @@
--- KBL Manager — PostgreSQL 스키마 (v0)
+-- KBL Manager — PostgreSQL 스키마 (참고 문서용)
+-- ⚠️ 실제 DB 적용은 이 파일이 아니라 migrations/1700000000000_initial-schema.js가 담당함.
+--    (node-pg-migrate 도입, `npm run migrate:up`으로 실행)
+--    이 파일은 스키마 전체 구조를 한눈에 보기 위한 사람용 참고 문서로 유지.
+--
 -- 팀 / 선수 / 시즌별 능력치 / 경기 일정·결과 / 개인 박스스코어 를 관리한다.
 
 CREATE TABLE teams (
