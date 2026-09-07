@@ -5,6 +5,7 @@
 import express from "express";
 import cors from "cors";
 import { pool } from "./db";
+import { advanceRound } from "./advanceRound";
 
 const app = express();
 app.use(cors());
@@ -97,6 +98,36 @@ app.get("/api/players/:name", async (req, res) => {
     res.json(result.rows[0]);
   } catch (e) {
     res.status(500).json({ error: String(e) });
+  }
+});
+
+/** 내 franchise 현재 상태 (선택 팀, 진행 라운드) */
+app.get("/api/franchise", async (_req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT f.id, f.current_round, t.name AS user_team, s.label AS season_label
+       FROM franchise f
+       JOIN teams t ON t.id = f.user_team_id
+       JOIN seasons s ON s.id = f.season_id
+       LIMIT 1`
+    );
+    if (result.rows.length === 0) {
+      res.status(404).json({ error: "franchise not found (run seed first)" });
+      return;
+    }
+    res.json(result.rows[0]);
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+/** 다음 라운드 진행: 내 팀 경기 상세 + 나머지 4경기 결과만 */
+app.post("/api/franchise/advance-round", async (_req, res) => {
+  try {
+    const result = await advanceRound(pool);
+    res.json(result);
+  } catch (e) {
+    res.status(400).json({ error: String(e) });
   }
 });
 
