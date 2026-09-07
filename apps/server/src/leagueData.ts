@@ -20,6 +20,7 @@ function parseCsv(content: string): { header: string[]; rows: string[][] } {
 }
 
 import { FOREIGN_LEAGUE_RECORDS, ForeignLeagueRecord } from "./foreignLeagueRecords";
+import { FOREIGN_OPTION_MINUTES } from "./foreignImportMinutes";
 
 /** 0~100 퍼센타일을 게임 스케일(50~99)로 변환 — attribute-pipeline과 동일 공식 */
 function toAttributeScale(percentile0to100: number): number {
@@ -172,7 +173,11 @@ export function loadLeagueData(): LeagueData {
       if (cols[teamIdx] === teamName) {
         const name = cols[nameIdx];
         const player = raw.find((p) => p.name === name);
-        const perGameMin = player && player.seasons.length > 0 ? player.seasons[player.seasons.length - 1].Min : 10;
+        const rawPerGameMin = player && player.seasons.length > 0 ? player.seasons[player.seasons.length - 1].Min : 10;
+        // ⚠️ 용병 1옵션/2옵션 출전시간은 리그 전체(10팀) 공통 지정 — 실측기록 유무와 무관하게
+        // 적용됨. 특히 KBL 기록이 없는 신규 용병 7명은 이 매핑이 없으면 기본값 10분으로
+        // 깔려서 로테이션에서 거의 안 뽑히는 문제가 있었음.
+        const perGameMin = FOREIGN_OPTION_MINUTES[name] ?? rawPerGameMin;
         // ⚠️ player가 players_enriched.json에 없는 선수(KBL 첫 시즌 외국인 등)는
         // 이전엔 nationality가 "KOR"로 잘못 하드코딩되어 용병 쿼터 적용이 아예 안 되는
         // 버그가 있었음 (실측 검증 중 발견). roster.csv의 실제 국적을 항상 사용하도록 수정.
