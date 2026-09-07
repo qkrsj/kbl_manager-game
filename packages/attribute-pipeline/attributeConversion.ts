@@ -683,19 +683,23 @@ export function computeLeagueDerivedAttributes(
       percentile(astPerUsageArr, bh.correctedAstPerUsage) * 0.6
     );
 
-    const passing = toAttributeScale(pass === null ? 50 : percentile(passingArr, pass));
+    // ⚠️ 최소표본 미달(출장시간 5분 미만)인 선수는 "정보가 없어서 평균"이 아니라
+    // "코치가 안 믿고 거의 안 써서 표본이 없는 것" — 즉 이미 그 자체가 못한다는 신호임.
+    // 그래서 중립값(50퍼센타일)이 아니라 최하위권(5퍼센타일)을 기본값으로 사용.
+    // (지적으로 발견 — 거의 안 뛴 후보선수를 "평균"으로 처리하는 게 논리적으로 안 맞음)
+    const LOW_SAMPLE_DEFAULT_PERCENTILE = 5;
+
+    const passing = toAttributeScale(pass === null ? LOW_SAMPLE_DEFAULT_PERCENTILE : percentile(passingArr, pass));
 
     // GD(굿디펜스) 보너스: steal에만 적용.
     // shotBlocking/defensiveRebounding은 빅맨 편향 속성인데 GD는 가드 편향 스탯이라
     // 함께 블렌딩하면 원래 잘하던 빅맨 점수가 오히려 깎이는 역효과가 있어 제외 (실측 검증 중 발견)
-    // ⚠️ 최소표본 미달(null)이면 베이지안 보정을 거치지 않고 중립값 50을 직접 사용
-    //    (산술평균 자체가 치우친 분포라 "평균 수렴"이 곧 50퍼센타일을 의미하지 않기 때문 — 실측 검증 중 발견)
-    const stealPct = stl === null ? 50 : percentile(stealArr, stl);
-    const gdPct = gd === null ? 50 : percentile(gdArr, gd);
+    const stealPct = stl === null ? LOW_SAMPLE_DEFAULT_PERCENTILE : percentile(stealArr, stl);
+    const gdPct = gd === null ? LOW_SAMPLE_DEFAULT_PERCENTILE : percentile(gdArr, gd);
     const steal = toAttributeScale(stealPct * 0.85 + gdPct * 0.15);
-    const shotBlocking = toAttributeScale(blk === null ? 50 : percentile(blockArr, blk));
-    const defensiveRebounding = toAttributeScale(dreb === null ? 50 : percentile(drebArr, dreb));
-    const offensiveRebounding = toAttributeScale(oreb === null ? 50 : percentile(orebArr, oreb));
+    const shotBlocking = toAttributeScale(blk === null ? LOW_SAMPLE_DEFAULT_PERCENTILE : percentile(blockArr, blk));
+    const defensiveRebounding = toAttributeScale(dreb === null ? LOW_SAMPLE_DEFAULT_PERCENTILE : percentile(drebArr, dreb));
+    const offensiveRebounding = toAttributeScale(oreb === null ? LOW_SAMPLE_DEFAULT_PERCENTILE : percentile(orebArr, oreb));
 
     // stamina: 경기당 출장시간(Min) 퍼센타일 단독 (거친 근사치)
     const staminaRawVal = staminaRaw.get(p.playerId)!;
