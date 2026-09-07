@@ -42,7 +42,16 @@ async function main() {
   rosterCsv.rows.forEach((cols) => {
     rosterMeta.set(cols[nameIdx], { team: cols[teamIdx], position: cols[posIdx], nationality: cols[natIdx] });
   });
-  const foreignEstimates = loadForeignEstimates();
+  const kblStatsForForeignComparison = raw
+    .filter((p) => p.seasons.length > 0)
+    .map((p) => {
+      const s = p.seasons[p.seasons.length - 1];
+      return {
+        PTS: s.PTS, REB: s.REB, AST: s.AST, BLK: s.BLK, STL: s.STL,
+        FGPct: s["FG%"] / 100, ThreePct: s["3P%"] / 100, FTPct: s["FT%"] / 100,
+      };
+    });
+  const foreignEstimates = loadForeignEstimates(kblStatsForForeignComparison);
 
   // ⚠️ 예전엔 raw(players_enriched.json, 174명)만 순회해서, KBL 첫 시즌이라 실측기록이
   // 없는 신규 외국인 선수 7명이 DB players 테이블에 아예 안 들어가는 버그가 있었음

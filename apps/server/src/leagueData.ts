@@ -19,17 +19,20 @@ function parseCsv(content: string): { header: string[]; rows: string[][] } {
   return { header, rows };
 }
 
-/**
- * KBL 첫 시즌이라 실측 기록이 없는 외국인 선수용 정성평가(상/중상/중/하 등)를
- * 0~99 능력치로 변환. data/manual/foreign_player_attribute_estimates.csv 기반.
- * ⚠️ 실측 스탯 기반이 아닌 다른 리그 커리어 참고 정성평가라 정확도가 낮음 — 거친 근사치.
- */
-const TIER_SCORE: Record<string, number> = {
-  "최상": 92, "상": 78, "중상": 65, "중": 50, "낮음": 30, "low": 30,
-};
-function tierToScore(raw: string): number {
-  const cleaned = raw.replace(/\(.*\)/g, "").trim(); // "중(자료부족)" 같은 괄호 설명 제거
-  return TIER_SCORE[cleaned] ?? 50;
+import { FOREIGN_LEAGUE_RECORDS, ForeignLeagueRecord } from "./foreignLeagueRecords";
+
+/** 0~100 퍼센타일을 게임 스케일(50~99)로 변환 — attribute-pipeline과 동일 공식 */
+function toAttributeScale(percentile0to100: number): number {
+  const clamped = Math.max(0, Math.min(100, percentile0to100));
+  return Math.round(50 + (clamped / 100) * 49);
+}
+
+function percentileOf(values: number[], target: number): number {
+  const clean = values.filter((v) => Number.isFinite(v));
+  if (clean.length === 0) return 50;
+  const below = clean.filter((v) => v < target).length;
+  const equal = clean.filter((v) => v === target).length;
+  return ((below + equal * 0.5) / clean.length) * 100;
 }
 
 export interface ForeignEstimate {
@@ -39,74 +42,77 @@ export interface ForeignEstimate {
   speedTier: number; // DisplayAttrs엔 speed가 없어(엔진 미사용, 표시전용) 별도 보관
 }
 
-export function loadForeignEstimates(): Map<string, ForeignEstimate> {
-  const filePath = path.join(__dirname, "../../../data/manual/foreign_player_attribute_estimates.csv");
-  if (!fs.existsSync(filePath)) return new Map();
+/**
+ * KBL 실측기록이 없는 외국인선수를 실제 해외리그 기록(foreignLeagueRecords.ts) 기반으로 평가.
+ * v0.2: 정성평가(상/중상/중) 방식 폐기 — 리그강도 배수로 KBL 환산 후, 실제 174명 KBL 선수의
+ * PTS/REB/AST/BLK/STL/FG%/3P%/FT% 실측 분포와 직접 percentile 비교해서 산출.
+ * (라운드파이프라인의 다른 선수들과 완전히 동일한 척도로 평가됨)
+ */
+export function loadForeignEstimates(
+  kblStats: { PTS: number; REB: number; AST: number; BLK: number; STL: number; FGPct: number; ThreePct: number; FTPct: number }[]
+): Map<string, ForeignEstimate> {
+  const ptsArr = kblStats.map((s) => s.PTS);
+  const rebArr = kblStats.map((s) => s.REB);
+  const astArr = kblStats.map((s) => s.AST);
+  const blkArr = kblStats.map((s) => s.BLK);
+  const stlArr = kblStats.map((s) => s.STL);
+  const fgArr = kblStats.map((s) => s.FGPct);
+  const threeArr = kblStats.map((s) => s.ThreePct);
+  const ftArr = kblStats.map((s) => s.FTPct);
 
-  // note 컬럼에 콤마가 포함된 경우가 있어 단순 split이 아니라 따옴표 인식 파싱 필요
-  const content = fs.readFileSync(filePath, "utf-8").trim();
-  const lines = content.split("\n");
-  const header = lines[0].split(",");
-  const idx = (col: string) => header.indexOf(col);
-
-  function parseCsvLine(line: string): string[] {
-    const result: string[] = [];
-    let cur = "";
-    let inQuotes = false;
-    for (let i = 0; i < line.length; i++) {
-      const ch = line[i];
-      if (ch === '"') inQuotes = !inQuotes;
-      else if (ch === "," && !inQuotes) { result.push(cur); cur = ""; }
-      else cur += ch;
-    }
-    result.push(cur);
-    return result;
-  }
+  const leagueAvgFg = fgArr.reduce((a, b) => a + b, 0) / fgArr.length;
+  const leagueAvgThree = threeArr.reduce((a, b) => a + b, 0) / threeArr.length;
+  const leagueAvgFt = ftArr.reduce((a, b) => a + b, 0) / ftArr.length;
 
   const result = new Map<string, ForeignEstimate>();
-  for (let i = 1; i < lines.length; i++) {
-    const cols = parseCsvLine(lines[i]);
-    const name = cols[idx("name")];
-    const scoring = tierToScore(cols[idx("scoring")]);
-    const rebounding = tierToScore(cols[idx("rebounding")]);
-    const playmaking = tierToScore(cols[idx("playmaking")]);
-    const threePoint = tierToScore(cols[idx("threePoint")]);
-    const perimeterDefense = tierToScore(cols[idx("perimeterDefense")]);
-    const finishingTier = tierToScore(cols[idx("finishing")]);
-    const speed = tierToScore(cols[idx("speed")]);
-    const postScoring = tierToScore(cols[idx("postScoring")]);
-    const block = tierToScore(cols[idx("block")]);
-    const steal = tierToScore(cols[idx("steal")]);
 
-    // "scoring"(종합득점력)과 "finishing"(골밑마무리 정성평가)을 섞어서 볼륨형 finishing 근사
-    const finishing = Math.round((scoring * 0.5 + finishingTier * 0.3 + postScoring * 0.2));
+  for (const r of FOREIGN_LEAGUE_RECORDS) {
+    // 리그강도 배수로 KBL 환산 (볼륨스탯만 — 정확도%는 리그강도 영향 상대적으로 적어 원값 유지)
+    const adjPpg = r.ppg * r.leagueStrength;
+    const adjRpg = r.rpg * r.leagueStrength;
+    const adjApg = r.apg * r.leagueStrength;
+    const adjBpg = (r.bpg ?? 0.1) * r.leagueStrength; // 데이터 없으면 KBL 중앙값(0.1)로 중립 처리
+    const adjSpg = (r.spg ?? 0.4) * r.leagueStrength; // 데이터 없으면 KBL 중앙값(0.4)로 중립 처리
+
+    const ptsPct = percentileOf(ptsArr, adjPpg);
+    const rebPct = percentileOf(rebArr, adjRpg);
+    const astPct = percentileOf(astArr, adjApg);
+    const blkPct = percentileOf(blkArr, adjBpg);
+    const stlPct = percentileOf(stlArr, adjSpg);
+    const fgPct = r.fgPct !== null ? percentileOf(fgArr, r.fgPct) : 50;
+    const threePct = r.threePct !== null ? percentileOf(threeArr, r.threePct) : 50;
+    const ftPctPercentile = r.ftPct !== null ? percentileOf(ftArr, r.ftPct) : 50;
+
+    const finishing = toAttributeScale(ptsPct); // finishing = 볼륨 단독(기존 파이프라인과 동일 철학)
+    const dunking = toAttributeScale((rebPct + fgPct) / 2); // 직접 데이터 없어 리바운드+FG% 로 운동능력 근사
+    const midRangeShooting = toAttributeScale(fgPct * 0.7 + 50 * 0.3);
+    const threePointShooting = toAttributeScale(threePct);
+    const freeThrowShooting = toAttributeScale(ftPctPercentile);
+    const ballHandling = toAttributeScale(astPct);
+    const passing = toAttributeScale(astPct);
+    const steal = toAttributeScale(stlPct);
+    const shotBlocking = toAttributeScale(blkPct);
+    const defensiveRebounding = toAttributeScale(rebPct);
+    const offensiveRebounding = toAttributeScale(rebPct);
+    const strength = toAttributeScale(rebPct);
+    const stamina = toAttributeScale(50 + (r.gamesSample >= 30 ? 15 : 0)); // 표본 많으면 체력검증됐다고 가점
 
     const attrs: DisplayAttrs = {
-      finishing,
-      dunking: Math.round((speed + postScoring) / 2), // 직접 항목 없어 운동능력형 대리값
-      midRangeShooting: Math.round((scoring + threePoint) / 2 * 0.7 + 50 * 0.3), // 직접 항목 없어 근사
-      threePointShooting: threePoint,
-      freeThrowShooting: 55, // 자료 없음 — 리그 평균보다 약간 위로 중립 처리
-      ballHandling: playmaking,
-      passing: playmaking,
-      steal: Math.round((steal + perimeterDefense) / 2),
-      shotBlocking: block,
-      defensiveRebounding: rebounding,
-      offensiveRebounding: rebounding,
-      strength: Math.round((rebounding + postScoring) / 2),
-      stamina: 60, // 자료 없음 — 외국인선수 평균적 체력으로 중립 처리
+      finishing, dunking, midRangeShooting, threePointShooting, freeThrowShooting,
+      ballHandling, passing, steal, shotBlocking, defensiveRebounding, offensiveRebounding,
+      strength, stamina,
     };
 
     const internals: SimulationInternals = {
-      paintAccuracy: 0.45 + (finishingTier - 50) / 200, // 등급 위아래로 완만하게 가감
-      midAccuracy: 0.35 + (attrs.midRangeShooting - 50) / 250,
-      threeAccuracy: 0.25 + (threePoint - 50) / 150,
-      ftAccuracy: 0.72,
-      usagePercentile: scoring,
-      ptsPercentile: scoring,
+      paintAccuracy: r.fgPct ?? leagueAvgFg,
+      midAccuracy: r.fgPct ?? leagueAvgFg,
+      threeAccuracy: r.threePct ?? leagueAvgThree,
+      ftAccuracy: r.ftPct ?? leagueAvgFt,
+      usagePercentile: ptsPct,
+      ptsPercentile: ptsPct,
     };
 
-    result.set(name, { name, attrs, internals, speedTier: speed });
+    result.set(r.name, { name: r.name, attrs, internals, speedTier: 50 });
   }
   return result;
 }
@@ -149,7 +155,16 @@ export function loadLeagueData(): LeagueData {
       };
     });
   const internalsMap = computeSimulationInternals(internalsInput);
-  const foreignEstimates = loadForeignEstimates();
+  const kblStatsForForeignComparison = raw
+    .filter((p) => p.seasons.length > 0)
+    .map((p) => {
+      const s = p.seasons[p.seasons.length - 1];
+      return {
+        PTS: s.PTS, REB: s.REB, AST: s.AST, BLK: s.BLK, STL: s.STL,
+        FGPct: s["FG%"] / 100, ThreePct: s["3P%"] / 100, FTPct: s["FT%"] / 100,
+      };
+    });
+  const foreignEstimates = loadForeignEstimates(kblStatsForForeignComparison);
 
   function buildTeamRoster(teamName: string): SimPlayer[] {
     const players: RosterPlayer[] = [];
