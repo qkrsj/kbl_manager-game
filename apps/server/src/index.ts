@@ -102,6 +102,36 @@ app.get("/api/players/:name", async (req, res) => {
 });
 
 /** 내 franchise 현재 상태 (선택 팀, 진행 라운드) */
+/** 전체 팀 목록 (팀선택 화면용) */
+app.get("/api/teams", async (_req, res) => {
+  try {
+    const result = await pool.query(`SELECT id, name FROM teams ORDER BY name`);
+    res.json(result.rows);
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+/** 내가 운영할 팀 선택/변경 */
+app.post("/api/franchise/select-team", async (req, res) => {
+  try {
+    const { teamId } = req.body;
+    if (!teamId) {
+      res.status(400).json({ error: "teamId가 필요합니다" });
+      return;
+    }
+    const existing = await pool.query(`SELECT id FROM franchise LIMIT 1`);
+    if (existing.rows.length === 0) {
+      res.status(404).json({ error: "franchise가 없습니다 (seed를 먼저 실행하세요)" });
+      return;
+    }
+    await pool.query(`UPDATE franchise SET user_team_id = $1 WHERE id = $2`, [teamId, existing.rows[0].id]);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
 app.get("/api/franchise", async (_req, res) => {
   try {
     const result = await pool.query(
