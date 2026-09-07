@@ -5,7 +5,7 @@
 import express from "express";
 import cors from "cors";
 import { pool } from "./db";
-import { advanceRound } from "./advanceRound";
+import { advanceToNextGame } from "./advanceToNextGame";
 
 const app = express();
 app.use(cors());
@@ -121,10 +121,10 @@ app.get("/api/franchise", async (_req, res) => {
   }
 });
 
-/** 다음 라운드 진행: 내 팀 경기 상세 + 나머지 4경기 결과만 */
-app.post("/api/franchise/advance-round", async (_req, res) => {
+/** 우리 팀의 다음 경기 날짜까지 진행: 그 날짜(포함) 밀린 다른 경기들도 함께 처리 */
+app.post("/api/franchise/advance", async (_req, res) => {
   try {
-    const result = await advanceRound(pool);
+    const result = await advanceToNextGame(pool);
     res.json(result);
   } catch (e) {
     res.status(400).json({ error: String(e) });

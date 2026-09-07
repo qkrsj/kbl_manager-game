@@ -46,21 +46,25 @@ export function generateRoundRobinSchedule(teams: string[], timesEach: number): 
   const games: ScheduledGame[] = [];
 
   let roundCounter = 0;
-  let dayCounter = 0;
+  let baseDayCounter = 0;
 
   for (let cycle = 0; cycle < timesEach; cycle++) {
     const flip = cycle % 2 === 1;
     for (const roundPairs of singleCycle) {
       roundCounter++;
       if (roundCounter > 1) {
-        const r = Math.random();
-        const gap = r < 0.15 ? 1 : r < 0.6 ? 2 : 3;
-        dayCounter += gap;
+        // ⚠️ roundGap 최솟값이 항상 라운드내 분산 최댓값보다 커야 라운드 경계에서
+        // 같은 팀이 겹쳐 배정되는 사고가 안 생김 (gap=4, jitter=0~3 이므로 항상 안전)
+        baseDayCounter += 4;
       }
       roundPairs.forEach((pair) => {
+        // ⚠️ "라운드"는 각 팀이 서로 한번씩 붙는 사이클 단위 개념일 뿐, 실제로는
+        // 하루에 다 열리지 않고 개별 경기가 며칠에 걸쳐 흩어져서 열린다.
+        // round 필드는 참고/디버그용으로만 남기고, 실제 시즌 진행은 day(날짜) 기준으로 처리.
+        const dayOffsetWithinRound = Math.floor(Math.random() * 4); // 0~3일 분산
         games.push({
           round: roundCounter,
-          day: dayCounter,
+          day: baseDayCounter + dayOffsetWithinRound,
           home: flip ? pair.away : pair.home,
           away: flip ? pair.home : pair.away,
         });
@@ -103,7 +107,7 @@ function emptyStanding(team: string): TeamStanding {
   return { team, wins: 0, losses: 0, pointsFor: 0, pointsAgainst: 0, gamesPlayed: 0 };
 }
 
-function applyFatigue(roster: SimPlayer[], restDays: number | null): SimPlayer[] {
+export function applyFatigue(roster: SimPlayer[], restDays: number | null): SimPlayer[] {
   if (restDays === null || restDays >= 2) return roster;
 
   return roster.map((p) => {
@@ -151,7 +155,9 @@ export function runSeason(
     cur.games += 1;
   }
 
-  const orderedSchedule = [...schedule].sort((a, b) => a.round - b.round);
+  // ⚠️ round는 이제 "사이클 단위" 개념일 뿐 시간순서를 보장하지 않음 (개별 경기가
+  // 날짜별로 흩어져 있으므로) — 반드시 day(날짜) 기준으로 정렬해야 휴식일 계산이 맞음
+  const orderedSchedule = [...schedule].sort((a, b) => a.day - b.day);
 
   for (const game of orderedSchedule) {
     const homeRosterBase = teamRosters.get(game.home);

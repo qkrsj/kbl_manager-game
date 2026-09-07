@@ -11,8 +11,8 @@ interface BoxScoreEntry {
   pf: number;
 }
 
-interface AdvanceRoundResult {
-  round: number;
+interface AdvanceResult {
+  targetDay: number;
   userTeamGame: {
     gameId: number;
     home: string;
@@ -22,13 +22,13 @@ interface AdvanceRoundResult {
     wentToOT: boolean;
     boxScore: BoxScoreEntry[];
   } | null;
-  otherGames: { gameId: number; home: string; away: string; homeScore: number; awayScore: number }[];
+  otherGames: { gameId: number; day: number; home: string; away: string; homeScore: number; awayScore: number }[];
 }
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:4000";
 
 export function AdvanceRoundPanel() {
-  const [result, setResult] = useState<AdvanceRoundResult | null>(null);
+  const [result, setResult] = useState<AdvanceResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -36,7 +36,7 @@ export function AdvanceRoundPanel() {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`${API_BASE}/api/franchise/advance-round`, { method: "POST" });
+      const res = await fetch(`${API_BASE}/api/franchise/advance`, { method: "POST" });
       const data = await res.json();
       if (!res.ok) {
         setError(data.error ?? "알 수 없는 오류");
@@ -53,19 +53,19 @@ export function AdvanceRoundPanel() {
   return (
     <div style={{ border: "1px solid #ccc", padding: "16px", borderRadius: "8px" }}>
       <button onClick={handleAdvance} disabled={loading} style={{ padding: "10px 20px", fontSize: "16px" }}>
-        {loading ? "시뮬레이션 중..." : "다음 라운드 진행"}
+        {loading ? "시뮬레이션 중..." : "다음 경기 진행"}
       </button>
 
       {error && <p style={{ color: "red" }}>{error}</p>}
 
       {result && (
         <div style={{ marginTop: "16px" }}>
-          <h3>R{result.round} 결과</h3>
+          <h3>Day {result.targetDay} 결과</h3>
 
           {result.userTeamGame && (
             <div style={{ marginBottom: "16px" }}>
               <h4>
-                내 팀 경기: {result.userTeamGame.home} {result.userTeamGame.homeScore} : {result.userTeamGame.awayScore}{" "}
+                우리 팀 경기: {result.userTeamGame.home} {result.userTeamGame.homeScore} : {result.userTeamGame.awayScore}{" "}
                 {result.userTeamGame.away}
                 {result.userTeamGame.wentToOT ? " (연장)" : ""}
               </h4>
@@ -97,14 +97,18 @@ export function AdvanceRoundPanel() {
             </div>
           )}
 
-          <h4>다른 경기 결과</h4>
-          <ul>
-            {result.otherGames.map((g) => (
-              <li key={g.gameId}>
-                {g.home} {g.homeScore} - {g.awayScore} {g.away}
-              </li>
-            ))}
-          </ul>
+          {result.otherGames.length > 0 && (
+            <>
+              <h4>그 사이 밀려있던 다른 경기 결과 ({result.otherGames.length}경기)</h4>
+              <ul>
+                {result.otherGames.map((g) => (
+                  <li key={g.gameId}>
+                    Day{g.day} · {g.home} {g.homeScore} - {g.awayScore} {g.away}
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
         </div>
       )}
     </div>
