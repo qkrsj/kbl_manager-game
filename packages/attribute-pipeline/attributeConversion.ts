@@ -711,13 +711,17 @@ export function computeLeagueDerivedAttributes(
     );
 
     // speed: 100 - (키퍼센타일×0.5 + 몸무게퍼센타일×0.5) — 크고 무거울수록 느리다는 거친 전제.
+    // ⚠️ 하한선 없이는 리그 내 극단적으로 크고 무거운 선수(99퍼센타일급 용병 빅맨)가
+    // speed 한 자릿수까지 나옴 — 아무리 대형 빅맨이어도 프로 운동선수인 이상 이 정도로
+    // 느릴 순 없다는 지적으로 발견. 하한선 25로 극단값만 구제하고, 평균 근처 선수들의
+    // 분포는 원래 설계(키/몸무게 절반씩 반영) 그대로 유지.
     // 데이터 없으면 중립값 50.
     const speedRawVal = speedRaw.get(p.playerId) ?? null;
     const speed = toAttributeScale(
       speedRawVal === null
         ? 50
-        : 100 - (percentile(heightArr, speedRawVal.height) * 0.5 +
-                 percentile(speedWeightArr, speedRawVal.weight) * 0.5)
+        : Math.max(25, 100 - (percentile(heightArr, speedRawVal.height) * 0.5 +
+                               percentile(speedWeightArr, speedRawVal.weight) * 0.5))
     );
 
     // potential — 용병(국적 KOR 아님)은 개념 자체가 안 맞아 null 처리

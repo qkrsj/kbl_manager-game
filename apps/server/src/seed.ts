@@ -98,7 +98,7 @@ async function main() {
         [
           playerId, seasonId, a.finishing, a.dunking, a.midRangeShooting, a.threePointShooting,
           a.freeThrowShooting, a.ballHandling, a.passing, a.steal, a.shotBlocking, a.defensiveRebounding,
-          a.offensiveRebounding, a.stamina, 50, a.strength, 50,
+          a.offensiveRebounding, a.stamina, 50, a.strength, estimate.speedTier,
         ]
       );
     }

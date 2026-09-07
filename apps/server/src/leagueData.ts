@@ -36,6 +36,7 @@ export interface ForeignEstimate {
   name: string;
   attrs: DisplayAttrs;
   internals: SimulationInternals;
+  speedTier: number; // DisplayAttrs엔 speed가 없어(엔진 미사용, 표시전용) 별도 보관
 }
 
 export function loadForeignEstimates(): Map<string, ForeignEstimate> {
@@ -105,7 +106,7 @@ export function loadForeignEstimates(): Map<string, ForeignEstimate> {
       ptsPercentile: scoring,
     };
 
-    result.set(name, { name, attrs, internals });
+    result.set(name, { name, attrs, internals, speedTier: speed });
   }
   return result;
 }
