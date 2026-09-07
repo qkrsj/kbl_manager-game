@@ -4,7 +4,7 @@
  * 실제 경기 시뮬레이션은 /api/franchise/advance-round 호출 시 라운드 단위로 진행됨.
  */
 import { pool } from "./db";
-import { loadLeagueData } from "./leagueData";
+import { loadLeagueData, loadForeignEstimates } from "./leagueData";
 import { generateRoundRobinSchedule } from "../../../packages/simulation-engine/seasonScheduler";
 
 const SEASON_LABEL = "2025-2026";
@@ -32,15 +32,21 @@ async function main() {
   const seasonId = seasonRes.rows[0].id;
 
   console.log("[seed] 선수/능력치 삽입...");
-  const rosterMeta = new Map<string, { team: string; position: string }>();
+  const rosterMeta = new Map<string, { team: string; position: string; nationality: string }>();
+  const natIdx = rosterCsv.header.indexOf("nationality");
   rosterCsv.rows.forEach((cols) => {
-    rosterMeta.set(cols[nameIdx], { team: cols[teamIdx], position: cols[posIdx] });
+    rosterMeta.set(cols[nameIdx], { team: cols[teamIdx], position: cols[posIdx], nationality: cols[natIdx] });
   });
+  const foreignEstimates = loadForeignEstimates();
 
+  // ⚠️ 예전엔 raw(players_enriched.json, 174명)만 순회해서, KBL 첫 시즌이라 실측기록이
+  // 없는 신규 외국인 선수 7명이 DB players 테이블에 아예 안 들어가는 버그가 있었음
+  // (실측 검증 중 발견). roster.csv 전체(174+7=181명 이상)를 기준으로 순회하도록 수정.
   let playerCount = 0;
-  for (const p of raw) {
-    const meta = rosterMeta.get(p.name);
-    const teamId = meta ? teamIdByName.get(meta.team) : null;
+  for (const [name, meta] of rosterMeta.entries()) {
+    const teamId = teamIdByName.get(meta.team) ?? null;
+    const p = raw.find((r) => r.name === name);
+    const estimate = foreignEstimates.get(name);
 
     const playerRes = await pool.query(
       `INSERT INTO players (name, team_id, nationality, position, position_group, height_cm, weight_kg, birth_date, is_foreign_import)
@@ -48,33 +54,51 @@ async function main() {
        ON CONFLICT (name, team_id) DO UPDATE SET nationality=EXCLUDED.nationality
        RETURNING id`,
       [
-        p.name, teamId, p.nationality, meta?.position ?? null,
-        meta?.position?.includes("센터") ? "C" : meta?.position?.includes("가드") ? "G" : "F",
-        p.heightCm, p.weightKg, p.birthDate ?? null,
-        p.nationality !== "KOR" && p.nationality !== "PHI",
+        name, teamId, meta.nationality, meta.position,
+        meta.position?.includes("센터") ? "C" : meta.position?.includes("가드") ? "G" : "F",
+        p?.heightCm ?? null, p?.weightKg ?? null, p?.birthDate ?? null,
+        meta.nationality !== "KOR" && meta.nationality !== "PHI",
       ]
     );
     const playerId = playerRes.rows[0].id;
     playerCount++;
 
-    const d = derivedMap.get(p.playerId);
-    if (!d) continue;
-
-    await pool.query(
-      `INSERT INTO player_attributes (
-        player_id, season_id, finishing, dunking, mid_range_shooting, three_point_shooting,
-        free_throw_shooting, ball_handling, passing, steal, shot_blocking, defensive_rebounding,
-        offensive_rebounding, stamina, injury_proneness, strength, speed, potential
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
-      ON CONFLICT (player_id, season_id) DO UPDATE SET finishing=EXCLUDED.finishing`,
-      [
-        playerId, seasonId, d.finishing, d.dunking, d.midRangeShooting, d.threePointShooting,
-        d.freeThrowShooting, d.ballHandling, d.passing, d.steal, d.shotBlocking, d.defensiveRebounding,
-        d.offensiveRebounding, d.stamina, d.injuryProneness, d.strength, d.speed, d.potential,
-      ]
-    );
+    if (p) {
+      const d = derivedMap.get(p.playerId);
+      if (!d) continue;
+      await pool.query(
+        `INSERT INTO player_attributes (
+          player_id, season_id, finishing, dunking, mid_range_shooting, three_point_shooting,
+          free_throw_shooting, ball_handling, passing, steal, shot_blocking, defensive_rebounding,
+          offensive_rebounding, stamina, injury_proneness, strength, speed, potential
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+        ON CONFLICT (player_id, season_id) DO UPDATE SET finishing=EXCLUDED.finishing`,
+        [
+          playerId, seasonId, d.finishing, d.dunking, d.midRangeShooting, d.threePointShooting,
+          d.freeThrowShooting, d.ballHandling, d.passing, d.steal, d.shotBlocking, d.defensiveRebounding,
+          d.offensiveRebounding, d.stamina, d.injuryProneness, d.strength, d.speed, d.potential,
+        ]
+      );
+    } else if (estimate) {
+      // KBL 첫 시즌 외국인 — 정성평가 기반 근사치를 player_attributes에 저장
+      // (injuryProneness/speed는 정성평가 항목에 없어 중립값 사용, potential은 용병이라 NULL)
+      const a = estimate.attrs;
+      await pool.query(
+        `INSERT INTO player_attributes (
+          player_id, season_id, finishing, dunking, mid_range_shooting, three_point_shooting,
+          free_throw_shooting, ball_handling, passing, steal, shot_blocking, defensive_rebounding,
+          offensive_rebounding, stamina, injury_proneness, strength, speed, potential
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,NULL)
+        ON CONFLICT (player_id, season_id) DO UPDATE SET finishing=EXCLUDED.finishing`,
+        [
+          playerId, seasonId, a.finishing, a.dunking, a.midRangeShooting, a.threePointShooting,
+          a.freeThrowShooting, a.ballHandling, a.passing, a.steal, a.shotBlocking, a.defensiveRebounding,
+          a.offensiveRebounding, a.stamina, 50, a.strength, 50,
+        ]
+      );
+    }
   }
-  console.log(`[seed] 선수 ${playerCount}명 삽입 완료`);
+  console.log(`[seed] 선수 ${playerCount}명 삽입 완료 (기록기반 ${raw.length}명 + 정성평가 ${foreignEstimates.size}명)`);
 
   console.log("[seed] 시즌 일정 생성 (아직 시뮬레이션은 안 함)...");
   const schedule = generateRoundRobinSchedule(teamNames, 6);
