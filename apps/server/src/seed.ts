@@ -94,8 +94,8 @@ async function main() {
         ]
       );
     } else if (estimate) {
-      // KBL 첫 시즌 외국인 — 정성평가 기반 근사치를 player_attributes에 저장
-      // (injuryProneness/speed는 정성평가 항목에 없어 중립값 사용, potential은 용병이라 NULL)
+      // KBL 첫 시즌 외국인 — 실제 해외리그 기록 기반 근사치를 player_attributes에 저장
+      // (potential은 용병이라 NULL)
       const a = estimate.attrs;
       await pool.query(
         `INSERT INTO player_attributes (
@@ -109,6 +109,20 @@ async function main() {
           a.freeThrowShooting, a.ballHandling, a.passing, a.steal, a.shotBlocking, a.defensiveRebounding,
           a.offensiveRebounding, a.stamina, 50, a.strength, estimate.speedTier,
         ]
+      );
+    } else {
+      // ⚠️ 국내선수인데 기록 자체가 없는 벤치/2군 선수 — 신인/포텐셜 유망주가 아니라
+      // "실력이 부족해서 출전을 거의 못 받은" 선수라는 지적으로 발견. 중립값(평균) 대신
+      // 스케일 최하단(50, 현재 스케일은 50~99라서 50=최약체) 명시적으로 부여.
+      // 잠재력도 마찬가지로 낮게(50) — 검증된 잠재력이 없는 선수이니 중립 취급 안 함.
+      await pool.query(
+        `INSERT INTO player_attributes (
+          player_id, season_id, finishing, dunking, mid_range_shooting, three_point_shooting,
+          free_throw_shooting, ball_handling, passing, steal, shot_blocking, defensive_rebounding,
+          offensive_rebounding, stamina, injury_proneness, strength, speed, potential
+        ) VALUES ($1,$2,50,50,50,50,50,50,50,50,50,50,50,50,50,50,50,50)
+        ON CONFLICT (player_id, season_id) DO UPDATE SET finishing=EXCLUDED.finishing`,
+        [playerId, seasonId]
       );
     }
   }
