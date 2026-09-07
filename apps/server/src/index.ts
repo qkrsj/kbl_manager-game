@@ -131,6 +131,117 @@ app.post("/api/franchise/advance", async (_req, res) => {
   }
 });
 
+/** 우리 팀 선수 목록 (로스터 설정 화면용, 현재 설정 포함) */
+app.get("/api/franchise/roster", async (_req, res) => {
+  try {
+    const franchiseRes = await pool.query(`SELECT user_team_id FROM franchise LIMIT 1`);
+    if (franchiseRes.rows.length === 0) {
+      res.status(404).json({ error: "franchise not found" });
+      return;
+    }
+    const teamId = franchiseRes.rows[0].user_team_id;
+    const result = await pool.query(
+      `SELECT p.id, p.name, p.position_group, p.nationality,
+              COALESCE(prs.role, 'inactive') AS role,
+              prs.minutes_target, prs.offense_priority
+       FROM players p
+       LEFT JOIN player_roster_settings prs ON prs.player_id = p.id AND prs.team_id = p.team_id
+       WHERE p.team_id = $1
+       ORDER BY p.position_group, p.name`,
+      [teamId]
+    );
+    res.json(result.rows);
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+/**
+ * 로스터 설정 저장: 선발 정확히 5명, 후보 정확히 7명이어야 함.
+ * body: { players: [{ playerId, role, minutesTarget, offensePriority }] }
+ */
+app.put("/api/franchise/roster", async (req, res) => {
+  try {
+    const franchiseRes = await pool.query(`SELECT user_team_id FROM franchise LIMIT 1`);
+    if (franchiseRes.rows.length === 0) {
+      res.status(404).json({ error: "franchise not found" });
+      return;
+    }
+    const teamId = franchiseRes.rows[0].user_team_id;
+    const players: { playerId: number; role: string; minutesTarget: number | null; offensePriority: number | null }[] =
+      req.body.players ?? [];
+
+    const starters = players.filter((p) => p.role === "starter");
+    const bench = players.filter((p) => p.role === "bench");
+    if (starters.length !== 5) {
+      res.status(400).json({ error: `선발은 정확히 5명이어야 합니다 (현재 ${starters.length}명)` });
+      return;
+    }
+    if (bench.length !== 7) {
+      res.status(400).json({ error: `후보는 정확히 7명이어야 합니다 (현재 ${bench.length}명)` });
+      return;
+    }
+
+    await pool.query(`DELETE FROM player_roster_settings WHERE team_id = $1`, [teamId]);
+    for (const p of players) {
+      await pool.query(
+        `INSERT INTO player_roster_settings (team_id, player_id, role, minutes_target, offense_priority)
+         VALUES ($1,$2,$3,$4,$5)`,
+        [teamId, p.playerId, p.role, p.minutesTarget, p.offensePriority]
+      );
+    }
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+/** 팀 전술 설정 조회 */
+app.get("/api/franchise/tactics", async (_req, res) => {
+  try {
+    const franchiseRes = await pool.query(`SELECT user_team_id FROM franchise LIMIT 1`);
+    if (franchiseRes.rows.length === 0) {
+      res.status(404).json({ error: "franchise not found" });
+      return;
+    }
+    const teamId = franchiseRes.rows[0].user_team_id;
+    const result = await pool.query(
+      `SELECT pace_style, three_point_reliance, defensive_stopper_player_id, clutch_closer_player_id
+       FROM team_tactics WHERE team_id = $1`,
+      [teamId]
+    );
+    res.json(result.rows[0] ?? { pace_style: "normal", three_point_reliance: "normal", defensive_stopper_player_id: null, clutch_closer_player_id: null });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+/** 팀 전술 설정 저장 */
+app.put("/api/franchise/tactics", async (req, res) => {
+  try {
+    const franchiseRes = await pool.query(`SELECT user_team_id FROM franchise LIMIT 1`);
+    if (franchiseRes.rows.length === 0) {
+      res.status(404).json({ error: "franchise not found" });
+      return;
+    }
+    const teamId = franchiseRes.rows[0].user_team_id;
+    const { paceStyle, threePointReliance, defensiveStopperPlayerId, clutchCloserPlayerId } = req.body;
+
+    await pool.query(
+      `INSERT INTO team_tactics (team_id, pace_style, three_point_reliance, defensive_stopper_player_id, clutch_closer_player_id)
+       VALUES ($1,$2,$3,$4,$5)
+       ON CONFLICT (team_id) DO UPDATE SET
+         pace_style=EXCLUDED.pace_style, three_point_reliance=EXCLUDED.three_point_reliance,
+         defensive_stopper_player_id=EXCLUDED.defensive_stopper_player_id,
+         clutch_closer_player_id=EXCLUDED.clutch_closer_player_id`,
+      [teamId, paceStyle ?? "normal", threePointReliance ?? "normal", defensiveStopperPlayerId ?? null, clutchCloserPlayerId ?? null]
+    );
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`[server] KBL Manager API listening on port ${PORT}`);
 });

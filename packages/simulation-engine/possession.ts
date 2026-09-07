@@ -47,9 +47,21 @@ export interface SimulationInternals {
   ptsPercentile: number;       // 0~100, 리그 내 PTS(경기당) 퍼센타일
 }
 
+/**
+ * 유저가 지정하는 전술 오버라이드 (전부 optional — 없으면 기존 엔진 기본 동작).
+ * AI팀 선수는 항상 undefined이므로 이 필드 도입으로 기존 동작은 전혀 안 바뀜.
+ */
+export interface TacticsOverride {
+  shotProbExponent?: number;      // 기본 9. 낮을수록 팀 전체가 빨리 쏨(fast pace 근사)
+  threeWeightMultiplier?: number; // 기본 1.0. 3점 슛종류 선택 가중치 배수
+  isDefensiveStopper?: boolean;   // 상대 최고usage 선수를 포지션 무관 전담마크
+  isClutchCloser?: boolean;       // 4쿼터에 usage/득점력 부스트 (gameSimulator에서 적용)
+}
+
 export interface SimPlayer extends LineupPlayer {
   attrs: DisplayAttrs;
   internals: SimulationInternals;
+  tactics?: TacticsOverride;
 }
 
 export interface PossessionEvent {
@@ -100,8 +112,20 @@ function weightedPick<T>(items: T[], weightFn: (t: T) => number): T {
 /** 같은 포지션 그룹의 수비자를 찾고, 스위치 확률에 따라 다른 그룹 선수로 교체 */
 function assignDefender(
   offPlayer: SimPlayer,
-  defense: SimPlayer[]
+  defense: SimPlayer[],
+  offense: SimPlayer[]
 ): { defender: SimPlayer; switched: boolean } {
+  // ⚠️ 수비 스토퍼 지정: 상대팀 usage 최고 선수를 포지션 무관 전담마크.
+  // 유저가 지정한 경우에만 활성화(tactics.isDefensiveStopper), AI팀은 항상 undefined라
+  // 기존 동작(포지션 매치업+확률적 스위치)이 그대로 유지됨.
+  const stopper = defense.find((d) => d.tactics?.isDefensiveStopper);
+  if (stopper) {
+    const topThreat = offense.reduce((a, b) => (b.internals.usagePercentile > a.internals.usagePercentile ? b : a));
+    if (offPlayer === topThreat) {
+      return { defender: stopper, switched: false }; // 의도된 지정 매치업이라 스위치 페널티 없음
+    }
+  }
+
   const sameGroup = defense.find((d) => d.positionGroup === offPlayer.positionGroup);
   const primaryDefender = sameGroup ?? defense[0];
 
@@ -125,10 +149,11 @@ function effectiveDefenseValue(defender: SimPlayer, switched: boolean, attr: key
 type ShotType = "paint" | "mid" | "three";
 
 function pickShotType(shooter: SimPlayer): ShotType {
+  const threeMultiplier = shooter.tactics?.threeWeightMultiplier ?? 1.0;
   const weights: Record<ShotType, number> = {
     paint: shooter.attrs.finishing,
     mid: shooter.attrs.midRangeShooting,
-    three: shooter.attrs.threePointShooting,
+    three: shooter.attrs.threePointShooting * threeMultiplier,
   };
   const total = weights.paint + weights.mid + weights.three;
   if (total <= 0) return "paint";
@@ -173,14 +198,15 @@ export function simulatePossession(
     // "패스도 몰리고 + 받으면 거의 다 쏨"의 이중 몰림이 발생 (실측 검증 중 발견 —
     // 시즌 시뮬레이션에서 패리스 배스 45.7점/경기로 비현실적으로 나온 원인).
     // 아무리 볼독점형 선수여도 매번 쏘지는 않는다는 하한을 두기 위해 0.65로 상한 설정.
-    const shotAttemptProb = Math.min(0.45, Math.pow(rawFactor, 9));
+    const shotProbExponent = holder.tactics?.shotProbExponent ?? 9;
+    const shotAttemptProb = Math.min(0.45, Math.pow(rawFactor, shotProbExponent));
 
     if (rand() < shotAttemptProb || chain === MAX_CHAIN_LENGTH - 1) {
       // ---- 드라이브(돌파) 단계: 슛 시도 전에 반드시 거침 ----
       // ⚠️ 이전 버전은 이 단계가 누락되어, "즉시슛"으로 끝나는 포제션(패스 0회)에는
       // 턴오버/파울이 발생할 기회 자체가 없었다 (실측 검증 중 발견 — 턴오버율 2.5~3.1%로
       // 비현실적으로 낮게 나온 원인. 정상 리그 평균은 12~15%).
-      const { defender: driveDefender, switched: driveSwitched } = assignDefender(holder, defense);
+      const { defender: driveDefender, switched: driveSwitched } = assignDefender(holder, defense, offense);
       const driveDefenderSteal = effectiveDefenseValue(driveDefender, driveSwitched, "steal");
       const driveTurnoverProb =
         BASE_TURNOVER_DRIVE * (1 - (holder.attrs.ballHandling / 100) * 0.5) * (1 + (driveDefenderSteal / 100) * 0.5);
@@ -205,7 +231,7 @@ export function simulatePossession(
 
       // ---- 슛 시도 ----
       const shotType = pickShotType(holder);
-      const { defender, switched } = assignDefender(holder, defense);
+      const { defender, switched } = assignDefender(holder, defense, offense);
       events.push({ type: "SHOT_ATTEMPT", actor: holder.name, detail: shotType });
 
       if (shotType === "paint") {

@@ -83,6 +83,21 @@ function excludeFouledOut(roster: SimPlayer[], box: Map<string, PlayerBoxScore>)
 }
 
 /** 한 쿼터(또는 연장)를 시뮬레이션하고 쿼터 득점을 반환 */
+/**
+ * 4쿼터 클러치 마무리 부스트: tactics.isClutchCloser로 지정된 선수의 usage/득점력
+ * 퍼센타일을 일시적으로 끌어올려서 마무리를 몰아주는 효과를 냄.
+ * ⚠️ 정교한 "경기 종료 직전 N분"이 아니라 4쿼터 전체에 적용하는 v0 근사치.
+ */
+function applyClutchBoost(roster: SimPlayer[]): SimPlayer[] {
+  const closer = roster.find((p) => p.tactics?.isClutchCloser);
+  if (!closer) return roster;
+  return roster.map((p) =>
+    p === closer
+      ? { ...p, internals: { ...p.internals, usagePercentile: 97, ptsPercentile: 97 } }
+      : p
+  );
+}
+
 function playPeriod(
   homeRoster: SimPlayer[],
   awayRoster: SimPlayer[],
@@ -94,18 +109,21 @@ function playPeriod(
   let homeScore = 0;
   let awayScore = 0;
 
+  const effectiveHomeRoster = quarter === 4 ? applyClutchBoost(homeRoster) : homeRoster;
+  const effectiveAwayRoster = quarter === 4 ? applyClutchBoost(awayRoster) : awayRoster;
+
   for (let i = 0; i < possessionsPerTeam * 2; i++) {
     const homeIsOffense = i % 2 === 0;
 
     // 파울아웃 선수 제외한 풀에서 라인업 선택 (안전장치: lineup.ts에서 5명 미만이면 자동 보충)
-    const homeEligible = excludeFouledOut(homeRoster, home.players);
-    const awayEligible = excludeFouledOut(awayRoster, away.players);
+    const homeEligible = excludeFouledOut(effectiveHomeRoster, home.players);
+    const awayEligible = excludeFouledOut(effectiveAwayRoster, away.players);
 
     const homeLineup = selectLineup(homeEligible, quarter).map(
-      (lp) => homeRoster.find((p) => p.name === lp.name)!
+      (lp) => effectiveHomeRoster.find((p) => p.name === lp.name)!
     );
     const awayLineup = selectLineup(awayEligible, quarter).map(
-      (lp) => awayRoster.find((p) => p.name === lp.name)!
+      (lp) => effectiveAwayRoster.find((p) => p.name === lp.name)!
     );
 
     const offense = homeIsOffense ? homeLineup : awayLineup;

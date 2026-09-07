@@ -11,7 +11,7 @@
  * (v0에서는 시즌 최종 정산 스윕을 별도로 구현하지 않음 — 추후 개선 예정)
  */
 import { Pool } from "pg";
-import { loadLeagueData } from "./leagueData";
+import { loadLeagueData, applyUserOverrides, PlayerRosterSetting, TeamTacticsSetting } from "./leagueData";
 import { simulateGame } from "../../../packages/simulation-engine/gameSimulator";
 import { SimPlayer } from "../../../packages/simulation-engine/possession";
 
@@ -67,14 +67,52 @@ export async function advanceToNextGame(pool: Pool): Promise<AdvanceResult> {
   );
 
   const { buildTeamRoster } = loadLeagueData();
-  const rosterCache = new Map<string, SimPlayer[]>();
-  function getRoster(teamName: string): SimPlayer[] {
-    if (!rosterCache.has(teamName)) rosterCache.set(teamName, buildTeamRoster(teamName));
-    return rosterCache.get(teamName)!;
-  }
 
   const userTeamRes = await pool.query(`SELECT name FROM teams WHERE id = $1`, [franchise.user_team_id]);
   const userTeamName = userTeamRes.rows[0].name;
+
+  // 유저 팀 로스터설정/전술 조회 (없으면 기본값 — 즉 오버라이드 없이 기존 엔진 동작)
+  const rosterSettingsRes = await pool.query(
+    `SELECT p.name, prs.role, prs.minutes_target, prs.offense_priority
+     FROM player_roster_settings prs JOIN players p ON p.id = prs.player_id
+     WHERE prs.team_id = $1`,
+    [franchise.user_team_id]
+  );
+  const playerSettings: PlayerRosterSetting[] = rosterSettingsRes.rows.map((r) => ({
+    name: r.name, role: r.role, minutesTarget: r.minutes_target ? Number(r.minutes_target) : null,
+    offensePriority: r.offense_priority,
+  }));
+
+  const tacticsRes = await pool.query(
+    `SELECT tt.pace_style, tt.three_point_reliance, sp.name AS stopper_name, cl.name AS closer_name
+     FROM team_tactics tt
+     LEFT JOIN players sp ON sp.id = tt.defensive_stopper_player_id
+     LEFT JOIN players cl ON cl.id = tt.clutch_closer_player_id
+     WHERE tt.team_id = $1`,
+    [franchise.user_team_id]
+  );
+  const tactics: TeamTacticsSetting = tacticsRes.rows.length > 0
+    ? {
+        paceStyle: tacticsRes.rows[0].pace_style, threePointReliance: tacticsRes.rows[0].three_point_reliance,
+        defensiveStopperName: tacticsRes.rows[0].stopper_name, clutchCloserName: tacticsRes.rows[0].closer_name,
+      }
+    : { paceStyle: "normal", threePointReliance: "normal", defensiveStopperName: null, clutchCloserName: null };
+
+  const hasUserRosterConfig = playerSettings.some((s) => s.role === "starter" || s.role === "bench");
+
+  const rosterCache = new Map<string, SimPlayer[]>();
+  function getRoster(teamName: string): SimPlayer[] {
+    if (!rosterCache.has(teamName)) {
+      const base = buildTeamRoster(teamName);
+      // ⚠️ 유저 팀이고, 유저가 실제로 로스터를 설정한 경우에만 오버라이드 적용.
+      // 아직 설정 안 했으면(기본 franchise 상태) 다른 팀과 동일하게 기존 엔진 그대로 사용.
+      const roster = teamName === userTeamName && hasUserRosterConfig
+        ? applyUserOverrides(base, playerSettings, tactics)
+        : base;
+      rosterCache.set(teamName, roster);
+    }
+    return rosterCache.get(teamName)!;
+  }
 
   const result: AdvanceResult = { targetDay, userTeamGame: null, otherGames: [] };
   const playerIdCache = new Map<string, number | null>();
