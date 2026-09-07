@@ -32,6 +32,11 @@ async function main() {
   const seasonId = seasonRes.rows[0].id;
 
   console.log("[seed] 선수/능력치 삽입...");
+  // ⚠️ 라건아는 국적상 KOR(귀화)이지만 lineup.ts의 FOREIGN_OVERRIDE_NAMES에서 이미
+  // 용병으로 예외처리하고 있음. is_foreign_import 값도 같은 예외를 적용해야
+  // DB 표시값과 실제 엔진 동작(용병 쿼터 계산)이 일치함 — roster.csv 순회로 바꾸면서
+  // 이 예외가 빠져서 DB 컬럼만 KOR로 잘못 표시되던 버그 발견, 수정.
+  const FOREIGN_OVERRIDE_NAMES = new Set(["라건아"]);
   const rosterMeta = new Map<string, { team: string; position: string; nationality: string }>();
   const natIdx = rosterCsv.header.indexOf("nationality");
   rosterCsv.rows.forEach((cols) => {
@@ -57,7 +62,7 @@ async function main() {
         name, teamId, meta.nationality, meta.position,
         meta.position?.includes("센터") ? "C" : meta.position?.includes("가드") ? "G" : "F",
         p?.heightCm ?? null, p?.weightKg ?? null, p?.birthDate ?? null,
-        meta.nationality !== "KOR" && meta.nationality !== "PHI",
+        FOREIGN_OVERRIDE_NAMES.has(name) || (meta.nationality !== "KOR" && meta.nationality !== "PHI"),
       ]
     );
     const playerId = playerRes.rows[0].id;
