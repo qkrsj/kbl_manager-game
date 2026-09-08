@@ -11,10 +11,11 @@
  *  3. 이후 호출부터는 플레이오프 시리즈를 진행한다 (advancePlayoffs).
  */
 import { Pool } from "pg";
-import { loadLeagueData, applyUserOverrides, PlayerRosterSetting, TeamTacticsSetting } from "./leagueData";
+import { loadLeagueData, applyUserOverrides, applyGrowthDeltas, PlayerRosterSetting, TeamTacticsSetting } from "./leagueData";
 import { simulateGame } from "../../../packages/simulation-engine/gameSimulator";
 import { SimPlayer } from "../../../packages/simulation-engine/possession";
 import { createFirstRoundPlayoffs, advancePlayoffs, PlayoffAdvanceResult } from "./playoffs";
+import { maybeApplyGrowthCheckpoint, loadGrowthDeltas } from "./playerProgression";
 
 interface BoxScoreEntry {
   name: string;
@@ -88,9 +89,12 @@ async function loadUserTeamRoster(pool: Pool, userTeamId: number, userTeamName: 
 /** 정규시즌 잔여(다른 팀들끼리의) 미진행 경기를 전부 스윕해서 순위표를 확정 */
 async function sweepRemainingRegularSeasonGames(pool: Pool, seasonId: number): Promise<void> {
   const { buildTeamRoster } = loadLeagueData();
+  const growthDeltas = await loadGrowthDeltas(pool, seasonId);
   const rosterCache = new Map<string, SimPlayer[]>();
   function getRoster(teamName: string): SimPlayer[] {
-    if (!rosterCache.has(teamName)) rosterCache.set(teamName, buildTeamRoster(teamName));
+    if (!rosterCache.has(teamName)) {
+      rosterCache.set(teamName, applyGrowthDeltas(buildTeamRoster(teamName), growthDeltas));
+    }
     return rosterCache.get(teamName)!;
   }
 
@@ -176,12 +180,16 @@ export async function advanceToNextGame(pool: Pool): Promise<AdvanceResult> {
 
   const userTeamRes = await pool.query(`SELECT name FROM teams WHERE id = $1`, [franchise.user_team_id]);
   const userTeamName = userTeamRes.rows[0].name;
-  const userRoster = await loadUserTeamRoster(pool, franchise.user_team_id, userTeamName);
+  const growthDeltas = await loadGrowthDeltas(pool, franchise.season_id);
+  const userRosterBase = await loadUserTeamRoster(pool, franchise.user_team_id, userTeamName);
+  const userRoster = applyGrowthDeltas(userRosterBase, growthDeltas);
 
   const { buildTeamRoster } = loadLeagueData();
   const rosterCache = new Map<string, SimPlayer[]>([[userTeamName, userRoster]]);
   function getRoster(teamName: string): SimPlayer[] {
-    if (!rosterCache.has(teamName)) rosterCache.set(teamName, buildTeamRoster(teamName));
+    if (!rosterCache.has(teamName)) {
+      rosterCache.set(teamName, applyGrowthDeltas(buildTeamRoster(teamName), growthDeltas));
+    }
     return rosterCache.get(teamName)!;
   }
 
@@ -244,6 +252,8 @@ export async function advanceToNextGame(pool: Pool): Promise<AdvanceResult> {
   }
 
   await pool.query(`UPDATE franchise SET current_round = current_round + 1 WHERE id = $1`, [franchise.id]);
+  const updatedRound = franchise.current_round + 1;
+  await maybeApplyGrowthCheckpoint(pool, franchise.season_id, updatedRound);
 
   return result;
 }

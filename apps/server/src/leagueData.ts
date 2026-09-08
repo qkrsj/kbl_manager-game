@@ -286,3 +286,42 @@ export function applyUserOverrides(
       };
     });
 }
+
+/**
+ * 팀 로스터 전체(용병 포함, 유저팀/AI팀 무관)에 누적 성장 delta를 적용.
+ * DisplayAttrs(0~99 스케일, 엔진 계산에 쓰이는 능력치)에만 적용하고,
+ * SimulationInternals(실제 슛확률 등 실측기반 값)는 건드리지 않음 —
+ * "얼마나 잘하는 선수인가"라는 등급 자체를 조정하는 개념이라 실제 확률까지
+ * 재추정하는 건 v0 범위를 넘어선다고 판단.
+ */
+export function applyGrowthDeltas(
+  roster: SimPlayer[],
+  deltas: Map<string, { finishing: number; dunking: number; midRangeShooting: number; threePointShooting: number;
+    freeThrowShooting: number; ballHandling: number; passing: number; steal: number; shotBlocking: number;
+    defensiveRebounding: number; offensiveRebounding: number; strength: number; stamina: number }>
+): SimPlayer[] {
+  const clamp = (v: number) => Math.max(50, Math.min(99, v));
+  return roster.map((p) => {
+    const d = deltas.get(p.name);
+    if (!d) return p;
+    return {
+      ...p,
+      attrs: {
+        ...p.attrs,
+        finishing: clamp(p.attrs.finishing + d.finishing),
+        dunking: clamp(p.attrs.dunking + d.dunking),
+        midRangeShooting: clamp(p.attrs.midRangeShooting + d.midRangeShooting),
+        threePointShooting: clamp(p.attrs.threePointShooting + d.threePointShooting),
+        freeThrowShooting: clamp(p.attrs.freeThrowShooting + d.freeThrowShooting),
+        ballHandling: clamp(p.attrs.ballHandling + d.ballHandling),
+        passing: clamp(p.attrs.passing + d.passing),
+        steal: clamp(p.attrs.steal + d.steal),
+        shotBlocking: clamp(p.attrs.shotBlocking + d.shotBlocking),
+        defensiveRebounding: clamp(p.attrs.defensiveRebounding + d.defensiveRebounding),
+        offensiveRebounding: clamp(p.attrs.offensiveRebounding + d.offensiveRebounding),
+        strength: clamp(p.attrs.strength + d.strength),
+        stamina: clamp(p.attrs.stamina + d.stamina),
+      },
+    };
+  });
+}

@@ -4,9 +4,10 @@
  * 6강전/4강전 5전3선(2-2-1 홈배정), 챔피언결정전 7전4선(2-3-2 홈배정). 상위시드가 항상 먼저 홈.
  */
 import { Pool } from "pg";
-import { loadLeagueData } from "./leagueData";
+import { loadLeagueData, applyGrowthDeltas } from "./leagueData";
 import { simulateGame } from "../../../packages/simulation-engine/gameSimulator";
 import { SimPlayer } from "../../../packages/simulation-engine/possession";
+import { loadGrowthDeltas } from "./playerProgression";
 
 // 2-2-1: 홈,홈,[휴식],원정,원정,[휴식],홈  (게임번호1~5에 대응하는 dayGap과 홈여부)
 const SERIES5_PATTERN = [
@@ -85,8 +86,9 @@ async function playNextGameInSeries(pool: Pool, seriesId: number): Promise<{
   const awayName = patternStep.higherSeedIsHome ? lowerName : higherName;
 
   const { buildTeamRoster } = loadLeagueData();
-  const homeRoster: SimPlayer[] = buildTeamRoster(homeName);
-  const awayRoster: SimPlayer[] = buildTeamRoster(awayName);
+  const growthDeltas = await loadGrowthDeltas(pool, series.season_id);
+  const homeRoster: SimPlayer[] = applyGrowthDeltas(buildTeamRoster(homeName), growthDeltas);
+  const awayRoster: SimPlayer[] = applyGrowthDeltas(buildTeamRoster(awayName), growthDeltas);
 
   const result = simulateGame(homeRoster, awayRoster, homeName, awayName);
 
