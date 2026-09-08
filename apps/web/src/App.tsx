@@ -7,16 +7,18 @@ import { TeamSelect } from "./components/TeamSelect";
 import { RosterSettings } from "./components/RosterSettings";
 import { TacticsSettings } from "./components/TacticsSettings";
 import { PlayoffBracket } from "./components/PlayoffBracket";
+import { PlayerSearch } from "./components/PlayerSearch";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:4000";
 
-type Tab = "game" | "team" | "roster" | "tactics";
+type Tab = "game" | "team" | "roster" | "tactics" | "player";
 
 function App() {
   const [selectedGameId, setSelectedGameId] = useState<number | null>(null);
   const [tab, setTab] = useState<Tab>("game");
   const [currentTeam, setCurrentTeam] = useState<string>("");
   const [playoffRefreshKey, setPlayoffRefreshKey] = useState(0);
+  const [selectedPlayerName, setSelectedPlayerName] = useState<string | undefined>(undefined);
 
   function refreshFranchise() {
     fetch(`${API_BASE}/api/franchise`)
@@ -32,6 +34,7 @@ function App() {
     { key: "team", label: "팀 선택" },
     { key: "roster", label: "로스터 설정" },
     { key: "tactics", label: "전술 설정" },
+    { key: "player", label: "선수 검색" },
   ];
 
   return (
@@ -59,8 +62,16 @@ function App() {
       </div>
 
       {tab === "team" && <TeamSelect currentTeam={currentTeam} onSelected={refreshFranchise} />}
-      {tab === "roster" && <RosterSettings />}
+      {tab === "roster" && (
+        <RosterSettings
+          onSelectPlayer={(name) => {
+            setSelectedPlayerName(name);
+            setTab("player");
+          }}
+        />
+      )}
       {tab === "tactics" && <TacticsSettings />}
+      {tab === "player" && <PlayerSearch initialName={selectedPlayerName} />}
 
       {tab === "game" && (
         <>

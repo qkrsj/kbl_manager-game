@@ -12,7 +12,7 @@ interface RosterPlayer {
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:4000";
 
-export function RosterSettings() {
+export function RosterSettings({ onSelectPlayer }: { onSelectPlayer?: (name: string) => void }) {
   const [players, setPlayers] = useState<RosterPlayer[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -96,7 +96,18 @@ export function RosterSettings() {
           {players.map((p) => (
             <tr key={p.id} style={{ borderBottom: "1px solid #eee", background: roleColor[p.role] }}>
               <td style={{ padding: "4px", textAlign: "center" }}>{p.position_group}</td>
-              <td style={{ padding: "4px" }}>{p.name}</td>
+              <td style={{ padding: "4px" }}>
+                {onSelectPlayer ? (
+                  <button
+                    onClick={() => onSelectPlayer(p.name)}
+                    style={{ background: "none", border: "none", color: "#2563eb", textDecoration: "underline", cursor: "pointer", padding: 0, font: "inherit" }}
+                  >
+                    {p.name}
+                  </button>
+                ) : (
+                  p.name
+                )}
+              </td>
               <td style={{ padding: "4px", textAlign: "center" }}>{p.nationality}</td>
               <td style={{ padding: "4px", textAlign: "center" }}>
                 <button onClick={() => cycleRole(p)} style={{ cursor: "pointer" }}>

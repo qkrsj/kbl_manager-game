@@ -63,8 +63,8 @@ async function main() {
     const estimate = foreignEstimates.get(name);
 
     const playerRes = await pool.query(
-      `INSERT INTO players (name, team_id, nationality, position, position_group, height_cm, weight_kg, birth_date, is_foreign_import)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+      `INSERT INTO players (name, team_id, nationality, position, position_group, height_cm, weight_kg, birth_date, is_foreign_import, draft_year, draft_overall_pick, draft_category)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
        ON CONFLICT (name, team_id) DO UPDATE SET nationality=EXCLUDED.nationality
        RETURNING id`,
       [
@@ -72,6 +72,9 @@ async function main() {
         meta.position?.includes("센터") ? "C" : meta.position?.includes("가드") ? "G" : "F",
         p?.heightCm ?? null, p?.weightKg ?? null, p?.birthDate ?? null,
         FOREIGN_OVERRIDE_NAMES.has(name) || (meta.nationality !== "KOR" && meta.nationality !== "PHI"),
+        p?.draftInfo?.kind === "picked" ? ((p as any)?.draftYear ?? null) : null,
+        p?.draftInfo?.kind === "picked" ? (p.draftInfo as any).overallPick : null,
+        p?.draftInfo?.kind ?? null,
       ]
     );
     const playerId = playerRes.rows[0].id;

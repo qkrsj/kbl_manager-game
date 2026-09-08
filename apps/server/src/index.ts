@@ -81,6 +81,7 @@ app.get("/api/players/:name", async (req, res) => {
   try {
     const result = await pool.query(
       `SELECT p.name, p.position, p.position_group, p.nationality, t.name AS team_name,
+              p.height_cm, p.weight_kg, p.birth_date, p.draft_year, p.draft_overall_pick, p.draft_category,
               pa.finishing, pa.dunking, pa.mid_range_shooting, pa.three_point_shooting,
               pa.free_throw_shooting, pa.ball_handling, pa.passing, pa.steal, pa.shot_blocking,
               pa.defensive_rebounding, pa.offensive_rebounding, pa.stamina, pa.injury_proneness,
