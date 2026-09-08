@@ -6,6 +6,7 @@ import { AdvanceRoundPanel } from "./components/AdvanceRoundPanel";
 import { TeamSelect } from "./components/TeamSelect";
 import { RosterSettings } from "./components/RosterSettings";
 import { TacticsSettings } from "./components/TacticsSettings";
+import { PlayoffBracket } from "./components/PlayoffBracket";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:4000";
 
@@ -15,6 +16,7 @@ function App() {
   const [selectedGameId, setSelectedGameId] = useState<number | null>(null);
   const [tab, setTab] = useState<Tab>("game");
   const [currentTeam, setCurrentTeam] = useState<string>("");
+  const [playoffRefreshKey, setPlayoffRefreshKey] = useState(0);
 
   function refreshFranchise() {
     fetch(`${API_BASE}/api/franchise`)
@@ -63,7 +65,10 @@ function App() {
       {tab === "game" && (
         <>
           <h2>내 팀 운영</h2>
-          <AdvanceRoundPanel />
+          <AdvanceRoundPanel onAdvanced={() => setPlayoffRefreshKey((k) => k + 1)} />
+
+          <h2 style={{ marginTop: "32px" }}>플레이오프</h2>
+          <PlayoffBracket refreshKey={playoffRefreshKey} />
 
           <h2 style={{ marginTop: "32px" }}>순위표</h2>
           <StandingsTable />

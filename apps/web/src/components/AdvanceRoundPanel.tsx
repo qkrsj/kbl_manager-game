@@ -11,7 +11,8 @@ interface BoxScoreEntry {
   pf: number;
 }
 
-interface AdvanceResult {
+interface RegularResult {
+  phase: "regular";
   targetDay: number;
   userTeamGame: {
     gameId: number;
@@ -25,9 +26,29 @@ interface AdvanceResult {
   otherGames: { gameId: number; day: number; home: string; away: string; homeScore: number; awayScore: number }[];
 }
 
-const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:4000";
+interface PlayoffResult {
+  phase: "playoffs";
+  round: string;
+  slot: string;
+  home: string;
+  away: string;
+  homeScore: number;
+  awayScore: number;
+  seriesComplete: boolean;
+  seriesWinner: string | null;
+}
 
-export function AdvanceRoundPanel() {
+interface DoneResult {
+  phase: "done";
+  champion: string | null;
+}
+
+type AdvanceResult = RegularResult | PlayoffResult | DoneResult;
+
+const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:4000";
+const ROUND_LABEL: Record<string, string> = { round1: "6강전", round2: "4강전", final: "챔피언결정전" };
+
+export function AdvanceRoundPanel({ onAdvanced }: { onAdvanced?: () => void }) {
   const [result, setResult] = useState<AdvanceResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -43,6 +64,7 @@ export function AdvanceRoundPanel() {
         return;
       }
       setResult(data);
+      onAdvanced?.();
     } catch (e) {
       setError(String(e));
     } finally {
@@ -58,9 +80,9 @@ export function AdvanceRoundPanel() {
 
       {error && <p style={{ color: "red" }}>{error}</p>}
 
-      {result && (
+      {result?.phase === "regular" && (
         <div style={{ marginTop: "16px" }}>
-          <h3>Day {result.targetDay} 결과</h3>
+          <h3>Day {result.targetDay} 결과 (정규시즌)</h3>
 
           {result.userTeamGame && (
             <div style={{ marginBottom: "16px" }}>
@@ -109,6 +131,24 @@ export function AdvanceRoundPanel() {
               </ul>
             </>
           )}
+        </div>
+      )}
+
+      {result?.phase === "playoffs" && (
+        <div style={{ marginTop: "16px" }}>
+          <h3>{ROUND_LABEL[result.round] ?? result.round} 결과</h3>
+          <p>
+            {result.home} {result.homeScore} : {result.awayScore} {result.away}
+          </p>
+          {result.seriesComplete && (
+            <p style={{ fontWeight: "bold", color: "#2563eb" }}>시리즈 종료! {result.seriesWinner} 승리</p>
+          )}
+        </div>
+      )}
+
+      {result?.phase === "done" && (
+        <div style={{ marginTop: "16px" }}>
+          <h3 style={{ color: "#eab308" }}>🏆 시즌 종료! 우승팀: {result.champion}</h3>
         </div>
       )}
     </div>

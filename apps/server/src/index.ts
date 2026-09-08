@@ -311,6 +311,33 @@ app.post("/api/franchise/select-team", async (req, res) => {
   }
 });
 
+/** 플레이오프 전체 브래킷 상태 (6강/4강/챔프전 시리즈 전적) */
+app.get("/api/franchise/playoffs", async (_req, res) => {
+  try {
+    const franchiseRes = await pool.query(`SELECT season_id FROM franchise LIMIT 1`);
+    if (franchiseRes.rows.length === 0) {
+      res.status(404).json({ error: "franchise not found" });
+      return;
+    }
+    const seasonId = franchiseRes.rows[0].season_id;
+    const result = await pool.query(
+      `SELECT s.round, s.slot, s.best_of, s.higher_seed_wins, s.lower_seed_wins,
+              ht.name AS higher_seed_team, lt.name AS lower_seed_team,
+              wt.name AS winner_team
+       FROM playoff_series s
+       JOIN teams ht ON ht.id = s.higher_seed_team_id
+       JOIN teams lt ON lt.id = s.lower_seed_team_id
+       LEFT JOIN teams wt ON wt.id = s.winner_team_id
+       WHERE s.season_id = $1
+       ORDER BY CASE s.round WHEN 'round1' THEN 1 WHEN 'round2' THEN 2 ELSE 3 END, s.slot`,
+      [seasonId]
+    );
+    res.json(result.rows);
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`[server] KBL Manager API listening on port ${PORT}`);
 });
