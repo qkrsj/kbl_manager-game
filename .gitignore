@@ -3,3 +3,5 @@ dist/
 build/
 *.log
 .env
+*.xlsx
+*.xls
