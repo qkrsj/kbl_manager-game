@@ -13,7 +13,7 @@ import { SimPlayer, DisplayAttrs, SimulationInternals } from "../../../packages/
 const DATA_DIR = path.join(__dirname, "../../../data/processed");
 
 function parseCsv(content: string): { header: string[]; rows: string[][] } {
-  const lines = content.trim().split("\n");
+  const lines = content.trim().split(/\r?\n/);
   const header = lines[0].split(",");
   const rows = lines.slice(1).map((l) => l.split(","));
   return { header, rows };

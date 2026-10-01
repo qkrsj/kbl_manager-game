@@ -47,7 +47,7 @@ function hashUnit(s: string): number {
 }
 
 function readContracts() {
-  const lines = fs.readFileSync(CONTRACTS_CSV, "utf-8").trim().split("\n");
+  const lines = fs.readFileSync(CONTRACTS_CSV, "utf-8").replace(/^\uFEFF/, "").trim().split(/\r?\n/);
   const header = lines[0].split(",");
   const idx = (k: string) => header.indexOf(k);
   const map = new Map<string, { type: string; krw: number | null; usd: number | null; faYear: number; source: string }>();
