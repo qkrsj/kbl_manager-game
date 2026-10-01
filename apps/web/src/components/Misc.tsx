@@ -1,6 +1,5 @@
-import { useState } from "react";
-import { useApi, Loading, ErrorBox, Card, Bar, TeamLink, useApp } from "./common";
-import { api, krw, usd } from "../api";
+import { useApi, Loading, ErrorBox, Card, Bar, TeamLink } from "./common";
+import { krw, usd } from "../api";
 import type { Payroll } from "../api";
 
 export function SalaryCapView() {
@@ -39,47 +38,5 @@ export function SalaryCapView() {
         <p className="small muted">2026-27 보수는 KBL 선수 등록 결과(보수 상위 선수·구단 소진율 보도)를 기준으로 하고, 보도되지 않은 선수는 구단 소진율과 기록으로 추정했습니다 (선수 페이지에 "보도 기준/추정치" 표시).</p>
       </Card>
     </div>
-  );
-}
-
-export function NewGameView() {
-  const { refresh, go } = useApp();
-  const { data, error } = useApi<{ name: string; coach: string; style: string; description: string }[]>("/api/new-game/teams");
-  const [busy, setBusy] = useState<string | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-  async function start(name: string) {
-    if (!confirm(`${name}(으)로 새 게임을 시작할까요? 현재 세이브는 초기화됩니다.`)) return;
-    setBusy(name);
-    setErr(null);
-    try {
-      await api("/api/new-game", { body: { teamName: name } });
-      refresh();
-      go({ name: "dashboard" });
-    } catch (e) {
-      const msg = String((e as Error).message);
-      setErr(msg.includes("does not exist") ? `DB 테이블이 없습니다. 게임 폴더에서 npm run setup 을 먼저 실행하세요. (${msg})` : msg);
-    } finally {
-      setBusy(null);
-    }
-  }
-  if (error) return <ErrorBox error={`팀 목록을 불러올 수 없습니다 — API 서버(npm start)가 켜져 있는지 확인하세요. (${error})`} />;
-  if (!data) return <Loading />;
-  return (
-    <Card title="새 게임 — 운영할 팀 선택 (2026-27 시즌)">
-      <p className="muted small">선택한 팀의 전술·출전시간·훈련·계약을 직접 관리합니다. 나머지 9개 팀은 실제 감독 성향에 따라 AI가 운영합니다.</p>
-      <ErrorBox error={err} />
-      <div className="grid cols-3">
-        {data.map((t) => (
-          <div key={t.name} className="card tight">
-            <b>{t.name}</b>
-            <div className="small muted">{t.coach} 감독 · {t.style}</div>
-            <div className="small muted" style={{ minHeight: 36 }}>{t.description}</div>
-            <button className="primary" style={{ marginTop: 8 }} disabled={!!busy} onClick={() => start(t.name)}>
-              {busy === t.name ? "생성 중..." : "이 팀으로 시작"}
-            </button>
-          </div>
-        ))}
-      </div>
-    </Card>
   );
 }

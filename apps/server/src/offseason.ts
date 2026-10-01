@@ -804,7 +804,9 @@ export async function startNewSeason(pool: Pool): Promise<{ seasonLabel: string;
     await insertSchedule(client, seasonId, schedule, cal.startDate, idByName);
 
     await client.query(
-      `UPDATE franchise SET season_id=$2, game_date=$3, phase='regular', offseason_stage=NULL, fa_day=0, champion_team_id=NULL, current_round=0 WHERE id=$1`,
+      `UPDATE franchise SET season_id=$2, game_date=$3, phase='regular', offseason_stage=NULL, fa_day=0, champion_team_id=NULL, current_round=0,
+         manager_profile = CASE WHEN manager_profile IS NULL THEN NULL ELSE jsonb_set(manager_profile, '{age}', to_jsonb(COALESCE((manager_profile->>'age')::int, 45) + 1)) END
+       WHERE id=$1`, // 감독도 한 살 더 먹는다
       [f.id, seasonId, cal.startDate]
     );
     await client.query("COMMIT");

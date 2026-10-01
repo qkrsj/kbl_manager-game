@@ -30,7 +30,7 @@ const TIPS = [
 const STEPS = ["선수 데이터 불러오는 중", "2026-27 시즌 일정 확인 중", "세이브 불러오는 중", "준비 완료"];
 const MIN_DURATION_MS = 3200;
 
-function useImage(src: string) {
+export function useImage(src: string) {
   const [ok, setOk] = useState<boolean | null>(null);
   useEffect(() => {
     const img = new Image();
@@ -100,7 +100,7 @@ function PlayerIllustration() {
 }
 
 /** 이미지가 없을 때 쓰는 경기장 그래픽: 조명 + 관중석 보케 + 코트 바닥 */
-function ArenaBackdrop() {
+export function ArenaBackdrop() {
   const dots = useMemo(() => {
     // 결정적 의사난수 (렌더마다 위치가 바뀌지 않게)
     let seed = 7;

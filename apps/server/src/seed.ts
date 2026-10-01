@@ -23,6 +23,7 @@ import { COACHES } from "./coaches";
 import { computeRatings, AttributeRow } from "./ratings";
 import { simProfileFromAttrs } from "./generatedPlayers";
 import { insertSchedule } from "./offseason";
+import { applyManagerProfile, ensureManagerSchema, ManagerProfile } from "./manager";
 
 const SEASON_YEAR = 2026;
 const SEASON_LABEL = "2026-2027";
@@ -81,17 +82,126 @@ function readContracts() {
   return map;
 }
 
-/** 새 게임에서 고를 수 있는 팀 목록 — DB가 비어 있어도(최초 설치 직후) 데이터 파일에서 바로 읽는다 */
-export function availableTeams(): { name: string; coach: string; style: string; description: string }[] {
-  const { teamNames } = loadLeagueData();
+/** 2026-27 개막 시점 전체 선수의 최종 능력치(기록 → 수준 보정 → 수동 조정) — DB 없이 계산 */
+function prepareLeague() {
+  const { raw, derivedMap, teamNames, rosterCsv, teamIdx, nameIdx, posIdx, birthDates, overseas, buildTeamRoster } = loadLeagueData();
+  const contracts = readContracts();
+  // 실측 기반 시뮬레이션 내부값 (팀 로스터 빌더를 통해 이름별로 수집)
+  const simByName = new Map<string, { internals: any; hasRecord: boolean }>();
+  for (const t of teamNames) {
+    for (const p of buildTeamRoster(t)) {
+      const hasRecord = raw.some((r) => r.name === p.name && r.seasons.length > 0);
+      simByName.set(p.name, { internals: p.internals, hasRecord });
+    }
+  }
+
+  // ⚠️ 라건아는 국적상 KOR(귀화)이지만 KBL 규정상 외국선수 — 계약도 외국선수(USD)로 관리
+  const FOREIGN_OVERRIDE_NAMES = new Set(["라건아"]);
+  const natIdx = rosterCsv.header.indexOf("nationality");
+  const rosterMeta = new Map<string, { team: string; position: string; nationality: string }>();
+  rosterCsv.rows.forEach((cols) => {
+    rosterMeta.set(cols[nameIdx], { team: cols[teamIdx], position: cols[posIdx], nationality: cols[natIdx] });
+  });
+  // 1단계: 전원 능력치 계산 (DB 삽입 전) → 2단계: 역할·생산성·연봉으로 수준 보정 → 3단계: 삽입
+  interface Draft {
+    name: string; meta: { team: string; position: string; nationality: string }; p: (typeof raw)[number] | undefined;
+    positionGroup: string; isForeign: boolean;
+    contract: ReturnType<typeof contracts.get>; attrs: AttributeRow; potential: number | null; injury: number;
+  }
+  const drafts: Draft[] = [];
+  for (const [name, meta] of rosterMeta.entries()) {
+    const p = raw.find((r) => r.name === name);
+    const positionGroup = meta.position?.includes("센터") ? "C" : meta.position?.includes("가드") ? "G" : "F";
+    const contract = contracts.get(name);
+    const isForeign = FOREIGN_OVERRIDE_NAMES.has(name) || (meta.nationality !== "KOR" && meta.nationality !== "PHI");
+
+    const d = p ? derivedMap.get(p.playerId) : undefined;
+    let attrs: AttributeRow;
+    let potential: number | null;
+    let injury = 50;
+    if (d) {
+      attrs = {
+        finishing: d.finishing, dunking: d.dunking, mid_range_shooting: d.midRangeShooting, three_point_shooting: d.threePointShooting,
+        free_throw_shooting: d.freeThrowShooting, ball_handling: d.ballHandling, passing: d.passing, steal: d.steal,
+        shot_blocking: d.shotBlocking, defensive_rebounding: d.defensiveRebounding, offensive_rebounding: d.offensiveRebounding,
+        stamina: d.stamina, strength: d.strength, speed: d.speed,
+      };
+      potential = d.potential;
+      injury = d.injuryProneness;
+    } else {
+      // 기록이 거의 없는 국내 벤치 선수 — 스케일 최하단(50) (기존 정책 유지)
+      attrs = {
+        finishing: 50, dunking: 50, mid_range_shooting: 50, three_point_shooting: 50, free_throw_shooting: 50, ball_handling: 50,
+        passing: 50, steal: 50, shot_blocking: 50, defensive_rebounding: 50, offensive_rebounding: 50, stamina: 50, strength: 50, speed: 50,
+      };
+      potential = 50;
+    }
+    drafts.push({ name, meta, p, positionGroup, isForeign, contract, attrs, potential, injury });
+  }
+
+  const calibration = calibrateRatings(drafts.map((dr) => {
+    const pooled = dr.p ? poolRecentSeasons(dr.p.seasons) : null;
+    const type = dr.contract?.type ?? (dr.isForeign ? "foreign" : dr.meta.nationality === "PHI" ? "asia" : "domestic");
+    return {
+      name: dr.name, group: type as CalibrationGroup, positionGroup: dr.positionGroup,
+      age: dr.p?.ageAtSeasonStart ?? (birthDates.has(dr.name) ? ageOnDate(birthDates.get(dr.name)!, SEASON_START_DATE) : 27), attrs: dr.attrs, pooled, seasons: dr.p?.seasons ?? [], reliability: sampleReliability(pooled),
+      salaryKrw: type === "domestic" ? dr.contract?.krw ?? null : null,
+      salaryReported: dr.contract?.source === "reported",
+      overseas: overseas.has(dr.name),
+      rookieContract: (dr.p as any)?.draftYear === 2025,
+    };
+  }));
+
+  const overrides = readOverrides();
+  for (const dr of drafts) {
+    const calibrated = calibration.get(dr.name)?.attrs ?? dr.attrs;
+    const override = overrides.get(dr.name);
+    dr.attrs = override !== undefined ? shiftToOverall(calibrated, dr.positionGroup, override) : calibrated;
+  }
+  return { teamNames, drafts, simByName, birthDates };
+}
+
+let prepared: ReturnType<typeof prepareLeague> | null = null;
+/** 새 게임 화면용 캐시 (데이터 파일은 게임 실행 중 바뀌지 않음) */
+function preparedLeague() {
+  if (!prepared) prepared = prepareLeague();
+  return prepared;
+}
+
+export interface NewGameTeam {
+  name: string; coach: string; style: string; description: string;
+  teamOverall: number; // 상위 8명 평균 오버롤
+  keyPlayers: { name: string; position: string; overall: number; type: string }[];
+}
+
+/** 새 게임에서 고를 수 있는 팀 목록 + 팀별 핵심 선수 2명 — DB가 비어 있어도(최초 설치 직후) 데이터 파일에서 바로 계산 */
+export function availableTeams(): NewGameTeam[] {
+  const { teamNames, drafts } = preparedLeague();
   return teamNames.map((name) => {
     const c = COACHES.find((x) => x.teamName === name);
-    return { name, coach: c?.name ?? "-", style: c?.style ?? "", description: c?.description ?? "" };
+    const players = drafts
+      .filter((d) => d.meta.team === name)
+      .map((d) => ({
+        name: d.name, position: d.meta.position, overall: computeRatings(d.attrs, d.positionGroup).overall,
+        type: d.isForeign ? "외국" : d.meta.nationality === "PHI" ? "아시아쿼터" : "국내",
+      }))
+      .sort((x, y) => y.overall - x.overall);
+    // 핵심 선수: 팀 간판 국내(아시아쿼터 포함) 선수 1명 + 나머지 중 최고 선수 1명
+    const face = players.find((x) => x.type !== "외국") ?? players[0];
+    const second = players.find((x) => x !== face);
+    const top8 = players.slice(0, 8);
+    return {
+      name, coach: c?.name ?? "-", style: c?.style ?? "", description: c?.description ?? "",
+      teamOverall: Math.round(top8.reduce((a, x) => a + x.overall, 0) / Math.max(1, top8.length)),
+      keyPlayers: [face, second].filter(Boolean) as NewGameTeam["keyPlayers"],
+    };
   });
 }
 
 /** @param userTeam 운영할 팀 (팀 이름 권장, 기존 호환용으로 DB id도 허용) */
-export async function seedDatabase(pool: Pool, userTeam?: number | string, log: (m: string) => void = () => {}): Promise<{ userTeamId: number }> {
+export async function seedDatabase(
+  pool: Pool, userTeam?: number | string, log: (m: string) => void = () => {}, profile?: ManagerProfile
+): Promise<{ userTeamId: number }> {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -102,9 +212,10 @@ export async function seedDatabase(pool: Pool, userTeam?: number | string, log: 
                season_growth_checkpoints, player_roster_settings, team_tactics, player_game_stats, games,
                playoff_series, franchise, player_attributes, players, seasons, teams RESTART IDENTITY CASCADE`);
 
-    log("[seed] players_enriched.json / roster.csv 로딩...");
-    const { raw, derivedMap, teamNames, rosterCsv, teamIdx, nameIdx, posIdx, birthDates, overseas, buildTeamRoster } = loadLeagueData();
-    const contracts = readContracts();
+    log("[seed] 선수 능력치 계산...");
+    // 새 게임은 항상 데이터 파일을 다시 읽어 계산 (rating_overrides.csv 등을 고친 직후에도 반영되게)
+    prepared = prepareLeague();
+    const { teamNames, drafts, simByName, birthDates } = prepared;
 
     const teamIdByName = new Map<string, number>();
     for (const teamName of teamNames) {
@@ -118,79 +229,9 @@ export async function seedDatabase(pool: Pool, userTeam?: number | string, log: 
     );
     const seasonId = seasonRes.rows[0].id;
 
-    // 실측 기반 시뮬레이션 내부값 (팀 로스터 빌더를 통해 이름별로 수집)
-    const simByName = new Map<string, { internals: any; hasRecord: boolean }>();
-    for (const t of teamNames) {
-      for (const p of buildTeamRoster(t)) {
-        const hasRecord = raw.some((r) => r.name === p.name && r.seasons.length > 0);
-        simByName.set(p.name, { internals: p.internals, hasRecord });
-      }
-    }
-
     log("[seed] 선수/능력치/계약 삽입...");
-    // ⚠️ 라건아는 국적상 KOR(귀화)이지만 KBL 규정상 외국선수 — 계약도 외국선수(USD)로 관리
-    const FOREIGN_OVERRIDE_NAMES = new Set(["라건아"]);
-    const natIdx = rosterCsv.header.indexOf("nationality");
-    const rosterMeta = new Map<string, { team: string; position: string; nationality: string }>();
-    rosterCsv.rows.forEach((cols) => {
-      rosterMeta.set(cols[nameIdx], { team: cols[teamIdx], position: cols[posIdx], nationality: cols[natIdx] });
-    });
-    // 1단계: 전원 능력치 계산 (DB 삽입 전) → 2단계: 역할·생산성·연봉으로 수준 보정 → 3단계: 삽입
-    interface Draft {
-      name: string; meta: { team: string; position: string; nationality: string }; p: (typeof raw)[number] | undefined;
-      positionGroup: string; isForeign: boolean;
-      contract: ReturnType<typeof contracts.get>; attrs: AttributeRow; potential: number | null; injury: number;
-    }
-    const drafts: Draft[] = [];
-    for (const [name, meta] of rosterMeta.entries()) {
-      const p = raw.find((r) => r.name === name);
-      const positionGroup = meta.position?.includes("센터") ? "C" : meta.position?.includes("가드") ? "G" : "F";
-      const contract = contracts.get(name);
-      const isForeign = FOREIGN_OVERRIDE_NAMES.has(name) || (meta.nationality !== "KOR" && meta.nationality !== "PHI");
-
-      const d = p ? derivedMap.get(p.playerId) : undefined;
-      let attrs: AttributeRow;
-      let potential: number | null;
-      let injury = 50;
-      if (d) {
-        attrs = {
-          finishing: d.finishing, dunking: d.dunking, mid_range_shooting: d.midRangeShooting, three_point_shooting: d.threePointShooting,
-          free_throw_shooting: d.freeThrowShooting, ball_handling: d.ballHandling, passing: d.passing, steal: d.steal,
-          shot_blocking: d.shotBlocking, defensive_rebounding: d.defensiveRebounding, offensive_rebounding: d.offensiveRebounding,
-          stamina: d.stamina, strength: d.strength, speed: d.speed,
-        };
-        potential = d.potential;
-        injury = d.injuryProneness;
-      } else {
-        // 기록이 거의 없는 국내 벤치 선수 — 스케일 최하단(50) (기존 정책 유지)
-        attrs = {
-          finishing: 50, dunking: 50, mid_range_shooting: 50, three_point_shooting: 50, free_throw_shooting: 50, ball_handling: 50,
-          passing: 50, steal: 50, shot_blocking: 50, defensive_rebounding: 50, offensive_rebounding: 50, stamina: 50, strength: 50, speed: 50,
-        };
-        potential = 50;
-      }
-      drafts.push({ name, meta, p, positionGroup, isForeign, contract, attrs, potential, injury });
-    }
-
-    const calibration = calibrateRatings(drafts.map((dr) => {
-      const pooled = dr.p ? poolRecentSeasons(dr.p.seasons) : null;
-      const type = dr.contract?.type ?? (dr.isForeign ? "foreign" : dr.meta.nationality === "PHI" ? "asia" : "domestic");
-      return {
-        name: dr.name, group: type as CalibrationGroup, positionGroup: dr.positionGroup,
-        age: dr.p?.ageAtSeasonStart ?? (birthDates.has(dr.name) ? ageOnDate(birthDates.get(dr.name)!, SEASON_START_DATE) : 27), attrs: dr.attrs, pooled, seasons: dr.p?.seasons ?? [], reliability: sampleReliability(pooled),
-        salaryKrw: type === "domestic" ? dr.contract?.krw ?? null : null,
-        salaryReported: dr.contract?.source === "reported",
-        overseas: overseas.has(dr.name),
-        rookieContract: (dr.p as any)?.draftYear === 2025,
-      };
-    }));
-
-    const overrides = readOverrides();
     for (const dr of drafts) {
-      const { name, meta, p, positionGroup, isForeign, contract, potential, injury } = dr;
-      const calibrated = calibration.get(name)?.attrs ?? dr.attrs;
-      const override = overrides.get(name);
-      const attrs = override !== undefined ? shiftToOverall(calibrated, positionGroup, override) : calibrated;
+      const { name, meta, p, positionGroup, isForeign, contract, potential, injury, attrs } = dr;
       const teamId = teamIdByName.get(meta.team) ?? null;
       const playerRes = await client.query(
         `INSERT INTO players (name, team_id, nationality, position, position_group, height_cm, weight_kg, birth_date, is_foreign_import, draft_year, draft_overall_pick, draft_category)
@@ -265,8 +306,14 @@ export async function seedDatabase(pool: Pool, userTeam?: number | string, log: 
       `INSERT INTO franchise (season_id, user_team_id, current_round, phase, game_date) VALUES ($1,$2,0,'regular',$3)`,
       [seasonId, chosen, GAME_START_DATE]
     );
+    await ensureManagerSchema(client);
+    if (profile) {
+      // 사용자 프로필이 선택한 팀의 감독이 된다 (실제 감독 대체) + 플레이 스타일대로 시작 전술 설정
+      await applyManagerProfile(client, chosen, profile, { resetTactics: true });
+      log(`[seed] ${profile.name} 감독 부임`);
+    }
     await client.query("COMMIT");
-    log(`[seed] 완료! 선수 ${rosterMeta.size}명, 경기 ${schedule.length}개`);
+    log(`[seed] 완료! 선수 ${drafts.length}명, 경기 ${schedule.length}개`);
     return { userTeamId: chosen };
   } catch (e) {
     await client.query("ROLLBACK");

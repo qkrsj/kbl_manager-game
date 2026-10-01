@@ -19,6 +19,8 @@ import {
   advanceOffseason, startNewSeason,
 } from "./offseason";
 import { seedDatabase, availableTeams } from "./seed";
+import { ensureManagerSchema, loadManagerProfile, applyManagerProfile, normalizeProfile, PLAY_STYLES, PERSONALITIES, DIRECTIONS } from "./manager";
+import type { CoachProfile } from "./coaches";
 import { ATTR_LABEL, SIM_ATTR_KEYS, computeRatings } from "./ratings";
 
 const app = express();
@@ -169,8 +171,62 @@ async function teamRoster(teamId: number) {
 
 app.post("/api/new-game", route(async (req) => {
   const team = req.body.teamName ? String(req.body.teamName) : Number(req.body.teamId) || undefined;
-  const out = await seedDatabase(pool, team);
+  const profile = req.body.profile ? normalizeProfile(req.body.profile) : undefined;
+  const out = await seedDatabase(pool, team, () => {}, profile);
   return { ok: true, ...out };
+}));
+
+/** 팀 감독 — DB(coaches)를 우선 (유저 팀은 사용자 프로필로 바뀌어 있음), 없으면 실제 감독 데이터 */
+async function teamCoach(teamId: number, teamName: string): Promise<CoachProfile> {
+  const base = coachForTeam(teamName);
+  const r = await pool.query(`SELECT * FROM coaches WHERE team_id=$1`, [teamId]);
+  const c = r.rows[0];
+  if (!c) return base;
+  return {
+    ...base, name: c.name, style: c.style, description: c.description ?? "", paceStyle: c.pace_style,
+    threePointReliance: c.three_point_reliance, defenseScheme: c.defense_scheme,
+    rotationDepth: Number(c.rotation_depth), youthPreference: Number(c.youth_preference),
+  };
+}
+
+/** 감독 프로필 선택지 (새 게임·감독실 화면용) */
+app.get("/api/manager/options", route(async () => ({
+  playStyles: Object.entries(PLAY_STYLES).map(([id, v]) => ({ id, label: v.label, description: v.description })),
+  personalities: Object.entries(PERSONALITIES).map(([id, v]) => ({ id, ...v })),
+  directions: Object.entries(DIRECTIONS).map(([id, v]) => ({ id, label: v.label, description: v.description, effect: v.effect })),
+})));
+
+/** 감독 프로필 + 커리어 (현재 세이브 기준) */
+app.get("/api/manager", route(async () => {
+  const f = await getFranchise(pool);
+  const profile = await loadManagerProfile(pool);
+  const coach = await teamCoach(f.userTeamId, f.userTeamName);
+  const career = await pool.query(
+    `SELECT s.label AS season,
+            COUNT(*) FILTER (WHERE g.series_id IS NULL) AS games,
+            COUNT(*) FILTER (WHERE g.series_id IS NULL AND ((g.home_team_id=$1 AND g.home_score>g.away_score) OR (g.away_team_id=$1 AND g.away_score>g.home_score))) AS wins,
+            COUNT(*) FILTER (WHERE g.series_id IS NOT NULL) AS po_games,
+            COUNT(*) FILTER (WHERE g.series_id IS NOT NULL AND ((g.home_team_id=$1 AND g.home_score>g.away_score) OR (g.away_team_id=$1 AND g.away_score>g.home_score))) AS po_wins
+     FROM games g JOIN seasons s ON s.id=g.season_id
+     WHERE g.home_score IS NOT NULL AND (g.home_team_id=$1 OR g.away_team_id=$1)
+     GROUP BY s.label, s.year ORDER BY s.year`,
+    [f.userTeamId]
+  );
+  return {
+    profile, coach, teamName: f.userTeamName, championTeamId: f.championTeamId,
+    career: career.rows.map((r) => ({
+      season: r.season, games: Number(r.games), wins: Number(r.wins), losses: Number(r.games) - Number(r.wins),
+      poGames: Number(r.po_games), poWins: Number(r.po_wins),
+    })),
+  };
+}));
+
+/** 감독 프로필 수정 (이름·나이·성격·운영 방향·플레이 스타일 — 전술은 바꾸지 않음) */
+app.put("/api/manager", route(async (req) => {
+  const f = await getFranchise(pool);
+  const profile = normalizeProfile(req.body);
+  await applyManagerProfile(pool, f.userTeamId, profile, { resetTactics: !!req.body.resetTactics });
+  return { ok: true, profile };
 }));
 
 /** 새 게임 팀 선택용 목록 (DB 상태와 무관하게 항상 10개 팀) */
@@ -178,7 +234,8 @@ app.get("/api/new-game/teams", route(async () => availableTeams()));
 
 app.get("/api/franchise", route(async () => {
   const f = await getFranchise(pool);
-  return { ...f, season_label: f.seasonLabel, user_team: f.userTeamName };
+  const manager = await loadManagerProfile(pool);
+  return { ...f, season_label: f.seasonLabel, user_team: f.userTeamName, manager };
 }));
 
 app.get("/api/dashboard", route(async () => {
@@ -206,7 +263,7 @@ app.get("/api/dashboard", route(async () => {
   return {
     franchise: f,
     myTeam: {
-      id: f.userTeamId, name: f.userTeamName, coach: coachForTeam(f.userTeamName), standing: mine,
+      id: f.userTeamId, name: f.userTeamName, coach: await teamCoach(f.userTeamId, f.userTeamName), standing: mine,
       payroll, capLimit: DOMESTIC_CAP,
       topPlayers: roster.slice(0, 6), injured: roster.filter((p) => p.injuredUntil && p.injuredUntil > f.date),
       nextGame: next.rows[0] ?? null, recent: recent.rows,
@@ -235,12 +292,61 @@ app.get("/api/teams", route(async () => {
   return r.rows;
 }));
 
+/** 팀 기록 (경기당 평균, 정규시즌) — 순위·팀 비교 화면용 */
+app.get("/api/team-stats", route(async () => {
+  const f = await getFranchise(pool);
+  const r = await pool.query(
+    `WITH tg AS (
+       SELECT s.team_id, s.game_id, SUM(s.pts) pts, SUM(s.reb) reb, SUM(s.oreb) oreb, SUM(s.ast) ast, SUM(s.stl) stl, SUM(s.blk) blk,
+              SUM(s.tov) tov, SUM(s.fgm) fgm, SUM(s.fga) fga, SUM(s.tpm) tpm, SUM(s.tpa) tpa, SUM(s.ftm) ftm, SUM(s.fta) fta
+       FROM player_game_stats s JOIN games g ON g.id=s.game_id
+       WHERE g.season_id=$1 AND g.series_id IS NULL GROUP BY s.team_id, s.game_id
+     ), opp AS (
+       SELECT a.team_id, AVG(b.pts) opp_pts, AVG(b.reb) opp_reb, AVG(b.tpm) opp_tpm
+       FROM tg a JOIN tg b ON a.game_id=b.game_id AND a.team_id<>b.team_id GROUP BY a.team_id
+     )
+     SELECT t.id AS team_id, t.name AS team_name, COUNT(tg.game_id)::int AS g,
+            ROUND(AVG(tg.pts)::numeric,1) pts, ROUND(AVG(tg.reb)::numeric,1) reb, ROUND(AVG(tg.oreb)::numeric,1) oreb,
+            ROUND(AVG(tg.ast)::numeric,1) ast, ROUND(AVG(tg.stl)::numeric,1) stl, ROUND(AVG(tg.blk)::numeric,1) blk,
+            ROUND(AVG(tg.tov)::numeric,1) tov, ROUND(AVG(tg.tpm)::numeric,1) tpm,
+            CASE WHEN SUM(tg.fga)>0 THEN ROUND(100.0*SUM(tg.fgm)/SUM(tg.fga),1) END fg_pct,
+            CASE WHEN SUM(tg.tpa)>0 THEN ROUND(100.0*SUM(tg.tpm)/SUM(tg.tpa),1) END tp_pct,
+            CASE WHEN SUM(tg.fta)>0 THEN ROUND(100.0*SUM(tg.ftm)/SUM(tg.fta),1) END ft_pct,
+            ROUND(MAX(opp.opp_pts)::numeric,1) opp_pts, ROUND(MAX(opp.opp_reb)::numeric,1) opp_reb
+     FROM teams t LEFT JOIN tg ON tg.team_id=t.id LEFT JOIN opp ON opp.team_id=t.id
+     GROUP BY t.id, t.name ORDER BY t.name`,
+    [f.seasonId]
+  );
+  return r.rows;
+}));
+
+/** 팀 둘러보기 카드용 요약 (순위·감독·팀 전력·간판 선수) */
+app.get("/api/teams-overview", route(async () => {
+  const f = await getFranchise(pool);
+  const standings = await standingsFor(f.seasonId);
+  const players = await loadLeaguePlayers(pool, f.date);
+  const teams = (await pool.query(`SELECT t.id, t.name, c.name AS coach, c.style FROM teams t LEFT JOIN coaches c ON c.team_id=t.id ORDER BY t.name`)).rows;
+  return teams.map((t) => {
+    const roster = players.filter((p) => p.teamId === t.id).sort((a, b) => b.ratings.overall - a.ratings.overall);
+    const top8 = roster.slice(0, 8);
+    const st = standings.find((s) => s.team_id === t.id);
+    return {
+      id: t.id, name: t.name, coach: t.coach, style: t.style, isUser: t.id === f.userTeamId,
+      rank: st?.rank ?? null, wins: st?.wins ?? 0, losses: st?.losses ?? 0, streak: st?.streak ?? "",
+      overall: Math.round(top8.reduce((a, p) => a + p.ratings.overall, 0) / Math.max(1, top8.length)),
+      offense: Math.round(top8.reduce((a, p) => a + p.ratings.offense, 0) / Math.max(1, top8.length)),
+      defense: Math.round(top8.reduce((a, p) => a + p.ratings.defense, 0) / Math.max(1, top8.length)),
+      stars: roster.slice(0, 3).map((p) => ({ id: p.id, name: p.name, overall: p.ratings.overall, positionGroup: p.positionGroup })),
+    };
+  });
+}));
+
 app.get("/api/teams/:id", route(async (req) => {
   const teamId = Number(req.params.id);
   const t = await pool.query(`SELECT id, name FROM teams WHERE id=$1`, [teamId]);
   if (!t.rows[0]) throw new Error("팀을 찾을 수 없습니다");
   return {
-    team: t.rows[0], coach: coachForTeam(t.rows[0].name),
+    team: t.rows[0], coach: await teamCoach(t.rows[0].id, t.rows[0].name),
     payroll: await teamPayroll(pool, teamId), roster: await teamRoster(teamId),
   };
 }));
@@ -260,7 +366,8 @@ app.get("/api/salary-cap", route(async () => {
 
 app.get("/api/schedule", route(async (req) => {
   const f = await getFranchise(pool);
-  const teamId = req.query.teamId === "all" ? null : Number(req.query.teamId ?? f.userTeamId);
+  // teamId 없음/빈 값 = 내 팀 (Number("")가 0이 되어 경기가 하나도 안 나오던 문제 수정)
+  const teamId = req.query.teamId === "all" ? null : Number(req.query.teamId) || f.userTeamId;
   const r = await pool.query(
     `SELECT g.id, g.game_date, g.round, ht.name AS home_team, at.name AS away_team, g.home_team_id, g.away_team_id,
             g.home_score, g.away_score, g.went_to_ot, g.series_id, g.game_number_in_series, ps.round AS playoff_round
@@ -501,7 +608,7 @@ app.get("/api/franchise/today", route(async () => {
     game = {
       ...row, isHome: row.home_team_id === f.userTeamId, played: row.home_score !== null,
       playoffLabel: row.playoff_round ? ROUND_LABEL[row.playoff_round] : null,
-      opponent: { id: opponentId, name: row.home_team_id === f.userTeamId ? row.away : row.home, coach: coachForTeam(row.home_team_id === f.userTeamId ? row.away : row.home), topPlayers: opp.slice(0, 8) },
+      opponent: { id: opponentId, name: row.home_team_id === f.userTeamId ? row.away : row.home, coach: await teamCoach(opponentId, row.home_team_id === f.userTeamId ? row.away : row.home), topPlayers: opp.slice(0, 8) },
       gamePlan: plan.rows[0] ?? null,
     };
   }
@@ -574,6 +681,7 @@ app.post("/api/offseason/advance", route(async () => advanceOffseason(pool)));
 app.post("/api/offseason/start-season", route(async () => startNewSeason(pool)));
 
 if (require.main === module) {
+  ensureManagerSchema(pool).catch(() => null); // 구버전 DB에 감독 프로필 컬럼 추가 (테이블이 아직 없으면 무시)
   app.listen(PORT, () => {
     console.log(`[server] KBL Manager API listening on port ${PORT}`);
   });

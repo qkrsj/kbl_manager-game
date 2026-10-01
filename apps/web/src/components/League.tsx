@@ -63,7 +63,7 @@ const STAT_TABS = [
   ["pts", "득점"], ["reb", "리바운드"], ["ast", "어시스트"], ["stl", "스틸"], ["blk", "블록"], ["tpm", "3점슛"], ["eff", "공헌도"],
 ] as const;
 
-function LeadersFull() {
+export function LeadersFull() {
   const [stat, setStat] = useState("pts");
   const [playoffs, setPlayoffs] = useState(false);
   const { data, error } = useApi<LeaderBoard>(`/api/leaders?stat=${stat}&limit=30&playoffs=${playoffs}`, [stat, playoffs]);

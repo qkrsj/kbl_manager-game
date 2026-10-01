@@ -17,5 +17,8 @@
 
 ```bash
 pip install "rembg[cpu]" pillow numpy scipy
+pip install torch     # (선택) 작은 사진을 AI(Real-ESRGAN)로 4배 선명하게 확대 — 화질이 깨질 때 강력 추천
 python apps/web/scripts/make_cover.py 가운데선수.jpg 왼쪽선수.jpg 오른쪽선수.jpg
 ```
+
+- **화질**: 원본 사진이 작으면(세로 1000px 미만) 늘리면서 흐려집니다. 가능하면 큰 원본 사진을 쓰고, `torch`를 설치하면 자동으로 AI 확대를 합니다 (모델 약 64MB, 처음 한 번만 다운로드).

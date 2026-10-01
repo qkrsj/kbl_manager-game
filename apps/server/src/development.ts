@@ -17,6 +17,7 @@
  *    경기 시작 체력과 AI 출전시간에 반영됨.
  * 5) 부상 — 경기 중(출전시간·피로·부상 위험도 비례)과 강도 높은 훈련 중 낮은 확률로 발생.
  */
+import { loadManagerProfile, trainingGrowthMultiplier, recoveryMultiplier, injuryMultiplier, experienceMultiplier } from "./manager";
 import { Pool, PoolClient } from "pg";
 import { AttrKey, ATTR_LABEL, computeRatings } from "./ratings";
 import { LeaguePlayer, loadLeaguePlayers, isAvailable } from "./rosterBuilder";
@@ -116,6 +117,7 @@ export async function processDailyDevelopment(
   const progressMap = new Map<number, Record<string, number>>(progressRes.rows.map((r) => [r.player_id, r.training_progress ?? {}]));
   const focusRes = await db.query(`SELECT player_id, focus FROM player_training_focus`);
   const personalFocus = new Map<number, TrainingFocus>(focusRes.rows.map((r) => [r.player_id, r.focus]));
+  const manager = await loadManagerProfile(db); // 유저 감독 프로필 효과 (유저 팀 선수만)
 
   const updates: PendingUpdate[] = [];
   const changes: DevelopmentChange[] = [];
@@ -140,12 +142,13 @@ export async function processDailyDevelopment(
     const trains = plan.mode === "train" && !injured && !(p.teamId !== null && playedToday.has(p.teamId));
 
     // 회복
-    fatigue -= DAILY_RECOVERY + (plan.mode === "rest" || injured ? REST_BONUS_RECOVERY : 0);
+    const mine = p.teamId === userTeamId;
+    fatigue -= (DAILY_RECOVERY + (plan.mode === "rest" || injured ? REST_BONUS_RECOVERY : 0)) * (mine ? recoveryMultiplier(manager) : 1);
 
     if (trains) {
       const focus = (p.teamId === userTeamId ? personalFocus.get(p.id) : undefined) ?? plan.focus;
       const attrs = TRAINING_FOCUS[focus]?.attrs ?? TRAINING_FOCUS.balanced.attrs;
-      const total = dailyGrowthRate(p, plan.intensity);
+      const total = dailyGrowthRate(p, plan.intensity) * (mine ? trainingGrowthMultiplier(manager, p.age) : 1);
       for (const a of attrs) {
         const cur = Number(p.attrs[a]);
         const ceilingMult = cur >= 95 ? 0.3 : cur >= 90 ? 0.6 : 1;
@@ -154,7 +157,7 @@ export async function processDailyDevelopment(
       fatigue += INTENSITY[plan.intensity].fatigueCost;
 
       // 강도 높은 훈련 중 부상
-      const injuryProb = 0.0012 * INTENSITY[plan.intensity].injuryMult * (0.5 + p.fatigue / 60);
+      const injuryProb = 0.0012 * INTENSITY[plan.intensity].injuryMult * (0.5 + p.fatigue / 60) * (mine ? injuryMultiplier(manager) : 1);
       if (Math.random() < injuryProb) {
         const days = 3 + Math.floor(Math.random() * 10);
         injuries.push({ name: p.name, teamId: p.teamId, days });
@@ -258,13 +261,16 @@ export async function processPostGame(db: Db, date: string, lines: GameLine[], i
   );
   const byId = new Map(res.rows.map((r) => [r.id, r]));
   const changes: DevelopmentChange[] = [];
+  const manager = await loadManagerProfile(db);
+  const userTeamId = (await db.query(`SELECT user_team_id FROM franchise LIMIT 1`)).rows[0]?.user_team_id ?? null;
 
   for (const l of lines) {
     if (l.min <= 0) continue;
     const r = byId.get(l.playerId);
     if (!r) continue;
     const eff = l.pts + l.reb + l.ast + l.stl + l.blk - l.tov - (l.fga - l.fgm) - (l.fta - l.ftm) * 0.5;
-    const gained = Math.round((l.min + Math.max(0, eff) * 1.5) * (isPlayoff ? 1.5 : 1));
+    const mine = l.teamId === userTeamId;
+    const gained = Math.round((l.min + Math.max(0, eff) * 1.5) * (isPlayoff ? 1.5 : 1) * (mine ? experienceMultiplier(manager) : 1));
     let xp = (r.xp ?? 0) + gained;
     let level = r.xp_level ?? 0;
     const birth = r.birth_date ? new Date(r.birth_date) : null;
@@ -293,7 +299,7 @@ export async function processPostGame(db: Db, date: string, lines: GameLine[], i
 
     // 피로도 누적 + 경기 중 부상
     const fatigue = Math.min(100, Number(r.fatigue ?? 0) + l.min * 0.9);
-    const injuryProb = 0.004 * (l.min / 30) * ((r.injury_proneness ?? 60) / 75) * (1 + Number(r.fatigue ?? 0) / 100);
+    const injuryProb = 0.004 * (l.min / 30) * ((r.injury_proneness ?? 60) / 75) * (1 + Number(r.fatigue ?? 0) / 100) * (mine ? injuryMultiplier(manager) : 1);
     const injuredUntil = Math.random() < injuryProb ? addDays(date, 2 + Math.floor(Math.random() * 18)) : null;
 
     await db.query(

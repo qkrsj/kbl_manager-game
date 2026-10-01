@@ -3,7 +3,12 @@ KM27 로딩 화면 표지 이미지 만들기 — 선수 사진 3장을 오려�
 
 사용법 (게임 폴더에서):
     pip install "rembg[cpu]" pillow numpy scipy
+    pip install torch          # (선택) 작은 사진을 AI로 선명하게 4배 확대 — 강력 추천
     python apps/web/scripts/make_cover.py 가운데선수.jpg 왼쪽선수.jpg 오른쪽선수.jpg
+
+화질: 원본 사진이 작을수록(세로 1000px 미만) 늘리면서 흐려진다.
+ - torch가 설치돼 있으면 Real-ESRGAN(x4plus) 모델로 4배 확대해 선명하게 만든다 (모델 약 64MB, 처음 한 번 자동 다운로드)
+ - 없으면 일반 확대(Lanczos) — 이 경우 가능한 한 큰 원본 사진을 쓸 것
 
 결과: apps/web/public/splash/player.png  (로딩 화면이 자동으로 사용)
  - 가운데 선수는 앞에 크게, 양옆 선수는 뒤에 약간 작고 어둡게 배치
@@ -19,11 +24,60 @@ from rembg import remove, new_session
 from PIL import Image, ImageFilter, ImageEnhance, ImageChops
 import numpy as np
 sess=new_session("u2net")
+TARGET_H = 1650  # 오려내기 전 사진 세로 크기 목표 (표지에서 가장 큰 선수가 1420px)
+
+def ai_upscale_x4(im):
+    """Real-ESRGAN x4plus로 4배 확대. torch가 없거나 실패하면 None"""
+    try:
+        import torch, torch.nn as nn, torch.nn.functional as F, urllib.request
+    except ImportError:
+        return None
+    class RDB(nn.Module):
+        def __init__(s, nf=64, gc=32):
+            super().__init__()
+            s.conv1=nn.Conv2d(nf,gc,3,1,1); s.conv2=nn.Conv2d(nf+gc,gc,3,1,1); s.conv3=nn.Conv2d(nf+2*gc,gc,3,1,1)
+            s.conv4=nn.Conv2d(nf+3*gc,gc,3,1,1); s.conv5=nn.Conv2d(nf+4*gc,nf,3,1,1); s.l=nn.LeakyReLU(0.2,True)
+        def forward(s,x):
+            x1=s.l(s.conv1(x)); x2=s.l(s.conv2(torch.cat((x,x1),1))); x3=s.l(s.conv3(torch.cat((x,x1,x2),1)))
+            x4=s.l(s.conv4(torch.cat((x,x1,x2,x3),1))); return s.conv5(torch.cat((x,x1,x2,x3,x4),1))*0.2+x
+    class RRDB(nn.Module):
+        def __init__(s): super().__init__(); s.rdb1=RDB(); s.rdb2=RDB(); s.rdb3=RDB()
+        def forward(s,x): return s.rdb3(s.rdb2(s.rdb1(x)))*0.2+x
+    class RRDBNet(nn.Module):
+        def __init__(s, nf=64):
+            super().__init__()
+            s.conv_first=nn.Conv2d(3,nf,3,1,1); s.body=nn.Sequential(*[RRDB() for _ in range(23)]); s.conv_body=nn.Conv2d(nf,nf,3,1,1)
+            s.conv_up1=nn.Conv2d(nf,nf,3,1,1); s.conv_up2=nn.Conv2d(nf,nf,3,1,1); s.conv_hr=nn.Conv2d(nf,nf,3,1,1)
+            s.conv_last=nn.Conv2d(nf,3,3,1,1); s.l=nn.LeakyReLU(0.2,True)
+        def forward(s,x):
+            f=s.conv_first(x); f=f+s.conv_body(s.body(f))
+            f=s.l(s.conv_up1(F.interpolate(f,scale_factor=2,mode='nearest')))
+            f=s.l(s.conv_up2(F.interpolate(f,scale_factor=2,mode='nearest')))
+            return s.conv_last(s.l(s.conv_hr(f)))
+    try:
+        cache=os.path.join(os.path.expanduser('~'), '.cache', 'km27'); os.makedirs(cache, exist_ok=True)
+        wpath=os.path.join(cache, 'RealESRGAN_x4plus.pth')
+        if not os.path.exists(wpath):
+            print('Real-ESRGAN 모델 다운로드 중 (약 64MB)...')
+            urllib.request.urlretrieve('https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth', wpath)
+        net=RRDBNet(); sd=torch.load(wpath, map_location='cpu'); net.load_state_dict(sd.get('params_ema', sd)); net.eval()
+        t=torch.from_numpy(np.array(im).astype(np.float32)/255).permute(2,0,1)[None]
+        with torch.no_grad(): o=net(t).clamp(0,1)[0].permute(1,2,0).numpy()
+        return Image.fromarray((o*255).round().astype(np.uint8))
+    except Exception as e:
+        print('AI 확대 실패 → 일반 확대 사용:', e)
+        return None
 
 def cutout(f):
     im=Image.open(f).convert('RGB')
-    big=im.resize((im.width*5, im.height*5), Image.LANCZOS)
-    big=big.filter(ImageFilter.UnsharpMask(radius=3, percent=70, threshold=2))
+    if im.height < TARGET_H:
+        up = ai_upscale_x4(im) if im.height * 2 < TARGET_H else None
+        if up is not None:
+            print(f'{f}: AI 4배 확대 ({im.width}x{im.height} → {up.width}x{up.height})')
+            im = up
+    scale = max(1.0, TARGET_H / im.height)
+    big=im.resize((round(im.width*scale), round(im.height*scale)), Image.LANCZOS) if scale > 1 else im
+    big=big.filter(ImageFilter.UnsharpMask(radius=1.2, percent=40, threshold=2))
     m=remove(big, session=sess, only_mask=True)
     m=m.point(lambda v: 0 if v<20 else (255 if v>235 else v)).filter(ImageFilter.GaussianBlur(1.2))
     # 가장 큰 덩어리(선수+공)만 남기고, 원본 사진에 찍힌 다른 사람 손 등 떨어진 조각 제거

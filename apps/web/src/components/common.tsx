@@ -7,17 +7,20 @@ import { api, ratingClass } from "../api";
 // ============================================================
 
 export type View =
-  | { name: "dashboard" }
+  | { name: "dashboard" }                       // 홈(허브)
   | { name: "today" }
   | { name: "live"; sessionId: string }
+  | { name: "myteam" }                          // 내 팀 개요
   | { name: "roster" }
   | { name: "tactics" }
+  | { name: "cap" }
+  | { name: "teams" }                           // 다른 팀 둘러보기
+  | { name: "team"; id: number }
+  | { name: "league"; tab?: "standings" | "players" | "teams" | "playoffs" }
   | { name: "training" }
   | { name: "schedule" }
-  | { name: "league" }
+  | { name: "office" }                          // 감독실
   | { name: "player"; id: number }
-  | { name: "team"; id: number }
-  | { name: "cap" }
   | { name: "offseason" }
   | { name: "newgame" };
 
@@ -26,9 +29,10 @@ export interface AppContextValue {
   refresh: () => void;   // 상단바(날짜/단계) 갱신
   version: number;       // 진행할 때마다 증가 → 화면들이 다시 불러옴
   userTeamId: number | null;
+  openSettings: () => void;
 }
 
-export const AppContext = createContext<AppContextValue>({ go: () => {}, refresh: () => {}, version: 0, userTeamId: null });
+export const AppContext = createContext<AppContextValue>({ go: () => {}, refresh: () => {}, version: 0, userTeamId: null, openSettings: () => {} });
 export const useApp = () => useContext(AppContext);
 
 /** GET 요청 + 로딩/에러 상태. deps가 바뀌거나 앱 version이 바뀌면 다시 불러온다. */
@@ -79,7 +83,7 @@ export function PlayerLink({ id, name }: { id: number; name: string }) {
 
 export function TeamLink({ id, name }: { id: number; name: string }) {
   const { go, userTeamId } = useApp();
-  return <a onClick={() => go(id === userTeamId ? { name: "roster" } : { name: "team", id })}>{name}</a>;
+  return <a onClick={() => go(id === userTeamId ? { name: "myteam" } : { name: "team", id })}>{name}</a>;
 }
 
 export function Card({ title, children, right }: { title?: ReactNode; children: ReactNode; right?: ReactNode }) {
