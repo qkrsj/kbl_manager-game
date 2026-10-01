@@ -421,9 +421,9 @@ export async function freeAgentList(db: Db) {
 
 export async function makeFaOffer(pool: Pool, playerId: number, amount: number, years: number) {
   const f = await franchiseRow(pool);
-  if (f.stage !== "fa") throw new Error("FA 시장 기간이 아닙니다");
+  if (f.stage !== "fa" && f.stage !== "ready") throw new Error("FA 시장 기간이 아닙니다");
   const r = await pool.query(
-    `SELECT p.team_id, p.previous_team_id, p.is_retired, c.contract_type FROM players p JOIN contracts c ON c.player_id=p.id WHERE p.id=$1`,
+    `SELECT p.name, p.team_id, p.previous_team_id, p.is_retired, c.contract_type FROM players p JOIN contracts c ON c.player_id=p.id WHERE p.id=$1`,
     [playerId]
   );
   const p = r.rows[0];
@@ -445,12 +445,24 @@ export async function makeFaOffer(pool: Pool, playerId: number, amount: number, 
   }
   const err = checkContract(payroll, p.contract_type, amount, { isOwnPlayer: p.previous_team_id === f.userTeamId, addsRosterSpot: true });
   if (err) throw new Error(err);
+  if (f.stage === "ready") {
+    // FA 시장 마감 후 남은 선수(잔여 FA)는 경쟁 없이 즉시 계약: 공정가치의 85% 이상이면 수락
+    const v = (await computePlayerValues(pool, f.seasonId, f.date)).get(playerId);
+    if (v && amount < v.fair * 0.85) throw new Error(`${p.name}: 제안이 너무 낮습니다`);
+    const faYear = f.endYear + (p.contract_type === "domestic" ? years : 1);
+    const col = p.contract_type === "domestic" ? "salary_krw" : "salary_usd";
+    await pool.query(`UPDATE contracts SET ${col}=$2, fa_year=$3, source='fa', signed_year=$4 WHERE player_id=$1`, [playerId, amount, faYear, f.endYear]);
+    await pool.query(`UPDATE players SET team_id=$2 WHERE id=$1`, [playerId, f.userTeamId]);
+    const label = p.contract_type === "domestic" ? `${years}년, ${formatKrw(amount)}` : `$${amount.toLocaleString()}`;
+    await logTx(pool, f.endYear, f.userTeamId, playerId, "sign", `${p.name} 잔여 FA 계약 (${label})`);
+    return { ok: true, signed: true };
+  }
   await pool.query(
     `INSERT INTO fa_offers (season_year, player_id, team_id, amount, years, offer_day) VALUES ($1,$2,$3,$4,$5,$6)
      ON CONFLICT (season_year, player_id, team_id) DO UPDATE SET amount=$4, years=$5, offer_day=$6`,
     [f.endYear, playerId, f.userTeamId, amount, years, f.faDay]
   );
-  return { ok: true };
+  return { ok: true, signed: false };
 }
 
 export async function withdrawFaOffer(pool: Pool, playerId: number) {

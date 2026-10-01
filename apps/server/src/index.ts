@@ -10,6 +10,7 @@ import { pool } from "./db";
 import { getFranchise, advanceDay, advanceToNextGameDay, quickSimUserGame, userGameToday } from "./season";
 import { startLiveGame, getLiveGame, updateLiveGame, stepLiveGame } from "./liveGames";
 import { loadLeaguePlayers, coachForTeam, ageOn } from "./rosterBuilder";
+import { aiMinutesPlan } from "./coaches";
 import { teamPayroll, DOMESTIC_CAP, SOFT_CAP_LIMIT, MIN_CAP_RATIO, FOREIGN_TOTAL_CAP_USD, ASIA_CAP_USD, MAX_DOMESTIC_ROSTER, MIN_SALARY } from "./salaryCap";
 import { TRAINING_FOCUS, XP_PER_LEVEL, loadTrainingPlan, dailyGrowthRate } from "./development";
 import { playoffBracket, ROUND_LABEL } from "./playoffs";
@@ -139,6 +140,13 @@ async function teamRoster(teamId: number) {
     [teamId]
   );
   const ex = new Map(extra.rows.map((r) => [r.id, r]));
+  // 감독 AI 기준 추천 출전시간 (유저가 출전시간을 설정하지 않았을 때의 기본값)
+  const teamName = (await pool.query(`SELECT name FROM teams WHERE id=$1`, [teamId])).rows[0]?.name ?? "";
+  const suggested = aiMinutesPlan(
+    players.filter((p) => !p.injuredUntil || p.injuredUntil <= f.date)
+      .map((p) => ({ name: p.name, isForeign: p.isForeign, overall: p.ratings.overall, age: p.age, fatigue: p.fatigue })),
+    { ...coachForTeam(teamName), rotationDepth: 0.5 }
+  );
   return players.map((p) => {
     const e = ex.get(p.id);
     return {
@@ -150,6 +158,7 @@ async function teamRoster(teamId: number) {
       faYear: e?.fa_year ?? null, contractSource: e?.source ?? null, xp: e?.xp ?? 0, xpLevel: e?.xp_level ?? 0,
       personalFocus: e?.personal_focus ?? null, draftYear: e?.draft_year, draftPick: e?.draft_overall_pick,
       stats: stats.get(p.id) ?? null,
+      suggestedMinutes: Math.round(suggested.get(p.name) ?? 0),
     };
   }).sort((a, b) => b.overall - a.overall);
 }

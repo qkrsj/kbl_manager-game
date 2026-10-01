@@ -5,6 +5,7 @@
  *
  *   npm run simulate              # 새 게임 시드 후 1시즌
  *   npm run simulate -- --live    # 우리 팀 경기를 LiveGame 세션(구간 진행)으로 치름
+ *   npm run simulate -- --stop-at-offseason   # 비시즌 시작 직후에서 멈춤 (UI로 비시즌 테스트용)
  */
 import { pool } from "../src/db";
 import { seedDatabase } from "../src/seed";
@@ -13,6 +14,7 @@ import { startLiveGame, stepLiveGame } from "../src/liveGames";
 import { advanceOffseason, startNewSeason, offseasonOverview, offerNegotiation, freeAgentList, makeFaOffer } from "../src/offseason";
 
 const useLive = process.argv.includes("--live");
+const stopAtOffseason = process.argv.includes("--stop-at-offseason");
 
 async function main() {
   const t0 = Date.now();
@@ -67,6 +69,8 @@ async function main() {
   console.log("팀당 외국선수 출전시간(분, 규정상 최대 60)", foreignMin.rows[0]);
   const dev = await pool.query(`SELECT reason, COUNT(*) n, SUM(delta) s FROM development_log GROUP BY reason`);
   console.table(dev.rows);
+
+  if (stopAtOffseason) return;
 
   // ---- 비시즌 ----
   const ov = await offseasonOverview(pool);
