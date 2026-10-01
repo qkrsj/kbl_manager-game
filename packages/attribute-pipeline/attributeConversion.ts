@@ -181,13 +181,14 @@ function toAttributeScale(percentile0to100: number): number {
 // ============================================================
 
 /**
- * 최근 3개 유효시즌을 (최신 1.0 / 직전 0.6 / 그 전 0.35) × 출전경기수로 가중 합산한 "합성 시즌" 스탯.
+ * 최근 3개 유효시즌을 (최신 1.0 / 직전 0.5 / 그 전 0.25) × 출전경기수로 가중 합산한 "합성 시즌" 스탯.
+ * (최근 급격히 출전이 줄어든 베테랑이 과거 기록으로 높게 평가되지 않도록 최신 시즌 비중을 크게 둠)
  * ⚠️ 이전엔 최신 1시즌만 썼기 때문에, 최신 시즌에 1경기만 뛴 선수(그 경기 수치가 그대로 평가됨)나
  *    부상으로 시즌 일부만 뛴 에이스의 능력치가 크게 왜곡됐다 (예: 2025-26 1경기 출전 선수가 74,
  *    37경기 출전 에이스가 80 — 사용자 지적으로 발견).
  * 경기당 수치는 가중 경기수 기준 평균, G는 가중 경기수 합(= 표본 크기), %는 합산 성공/시도로 재계산.
  */
-export const RECENT_SEASON_WEIGHTS = [1.0, 0.6, 0.35];
+export const RECENT_SEASON_WEIGHTS = [1.0, 0.5, 0.25];
 
 export function poolRecentSeasons(seasons: SeasonStatLine[], weights: number[] = RECENT_SEASON_WEIGHTS): SeasonStatLine | null {
   const recent = seasons.slice(-weights.length).reverse(); // 최신 → 과거

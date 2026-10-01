@@ -20,6 +20,9 @@
  *                    정해진 테이블이라 연봉 신호를 쓰지 않음.
  *
  *   가중치  기록 / 역할·생산성 / 연봉 = 30% / 30% / 40%  (31세 이상: 25% / 30% / 45%)
+ *   ⚠️ 연봉이 보도로 확인되지 않은 추정치(source=estimated)인 선수는 연봉 비중을 1/3로 줄임
+ *      (추정 연봉 자체가 기록·경력으로 만든 값이라 다시 크게 반영하면 이중 반영 — 벤치 베테랑 과대평가 원인)
+ *   KBL 기록이 없는 외국선수·아시아쿼터: 해외리그 기록(리그 강도 환산)으로 역할·생산성을 대신 평가
  *
  * 국내선수·아시아쿼터: 순위 → 오버롤 58~90, 외국선수: 78~92 (외국선수끼리 비교)
  */
@@ -38,6 +41,8 @@ export interface CalibrationInput {
   seasons: SeasonStatLine[];        // 커리어 전체 시즌 (전성기 실적 계산용)
   reliability: number;              // 0~1
   salaryKrw: number | null;         // 국내선수 보수(만원)
+  salaryReported: boolean;          // true = 2026-27 보도로 확인된 보수, false = 추정치
+  overseasLine?: { pts: number; reb: number; ast: number } | null; // KBL 기록 없는 선수의 해외리그 기록(리그 강도 환산)
   rookieContract: boolean;
 }
 
@@ -104,11 +109,18 @@ export function calibrateRatings(players: CalibrationInput[]): Map<string, Calib
     const mpgArr = withStats.map((p) => p.pooled!.Min);
     const effArr = withStats.map((p) => efficiencyPerGame(p.pooled!));
     const peakArr = members.map((p) => peakEfficiency(p.seasons)).filter((v): v is number => v !== null);
+    const praArr = withStats.map((p) => p.pooled!.PTS + p.pooled!.REB + p.pooled!.AST);
 
     for (const p of members) {
       const before = overall.get(p.name)!;
       const statPct = percentileOf(overallArr, before);
       let productionPct: number | null = null;
+      if (!p.pooled && p.overseasLine) {
+        // KBL 기록이 없는 선수: 해외리그 득점+리바운드+어시스트(리그 강도 환산)를 같은 그룹 KBL 선수와 비교
+        // 해외 기록은 불확실성이 있어 85%만 인정
+        const pra = p.overseasLine.pts + p.overseasLine.reb + p.overseasLine.ast;
+        productionPct = percentileOf(praArr, pra) * 0.85 + 10 * 0.15;
+      }
       if (p.pooled) {
         const raw = percentileOf(mpgArr, p.pooled.Min) * 0.4 + percentileOf(effArr, efficiencyPerGame(p.pooled)) * 0.6;
         const recent = raw * p.reliability + 10 * (1 - p.reliability);
@@ -120,13 +132,20 @@ export function calibrateRatings(players: CalibrationInput[]): Map<string, Calib
 
       let pct: number;
       if (productionPct === null && salaryPct === null) {
-        // 기록 없음: 외국선수(해외리그 환산)는 기록 능력치 그대로, 국내 무기록 선수는 하위권
+        // 기록 없음: 외국선수는 기록 능력치 그대로, 국내 무기록 선수는 하위권
         pct = p.group === "foreign" ? statPct : Math.min(statPct, 10);
       } else if (salaryPct === null) {
         pct = statPct * 0.5 + (productionPct ?? statPct) * 0.5;
       } else {
         const veteran = p.age >= 31;
-        const [ws, wp, wsal] = veteran ? [0.25, 0.3, 0.45] : [0.3, 0.3, 0.4];
+        let [ws, wp, wsal] = veteran ? [0.25, 0.3, 0.45] : [0.3, 0.3, 0.4];
+        if (!p.salaryReported) {
+          // 추정 연봉은 기록·경력으로 만든 값이라 다시 크게 반영하면 이중 반영 → 비중 1/3로 줄이고 나머지는 기록·역할로
+          const cut = wsal * (2 / 3);
+          wsal -= cut;
+          ws += cut / 2;
+          wp += cut / 2;
+        }
         pct = statPct * ws + (productionPct ?? 10) * wp + salaryPct * wsal;
       }
       const target = targetOverall(p.group, pct);

@@ -15,6 +15,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { Pool } from "pg";
 import { loadLeagueData, loadForeignEstimates } from "./leagueData";
+import { FOREIGN_LEAGUE_RECORDS } from "./foreignLeagueRecords";
 import { poolRecentSeasons, sampleReliability } from "../../../packages/attribute-pipeline/attributeConversion";
 import { calibrateRatings, CalibrationGroup, shiftToOverall } from "./ratingCalibration";
 import { generateKblCalendarSchedule } from "../../../packages/simulation-engine/seasonScheduler";
@@ -189,6 +190,10 @@ export async function seedDatabase(pool: Pool, userTeam?: number | string, log: 
       drafts.push({ name, meta, p, estimate, positionGroup, isForeign, contract, attrs, potential, injury });
     }
 
+    const overseasLine = (name: string) => {
+      const r = FOREIGN_LEAGUE_RECORDS.find((x) => x.name === name);
+      return r ? { pts: r.ppg * r.leagueStrength, reb: r.rpg * r.leagueStrength, ast: r.apg * r.leagueStrength } : null;
+    };
     const calibration = calibrateRatings(drafts.map((dr) => {
       const pooled = dr.p ? poolRecentSeasons(dr.p.seasons) : null;
       const type = dr.contract?.type ?? (dr.isForeign ? "foreign" : dr.meta.nationality === "PHI" ? "asia" : "domestic");
@@ -196,6 +201,8 @@ export async function seedDatabase(pool: Pool, userTeam?: number | string, log: 
         name: dr.name, group: type as CalibrationGroup, positionGroup: dr.positionGroup,
         age: dr.p?.ageAtSeasonStart ?? 27, attrs: dr.attrs, pooled, seasons: dr.p?.seasons ?? [], reliability: sampleReliability(pooled),
         salaryKrw: type === "domestic" ? dr.contract?.krw ?? null : null,
+        salaryReported: dr.contract?.source === "reported",
+        overseasLine: overseasLine(dr.name),
         rookieContract: (dr.p as any)?.draftYear === 2025,
       };
     }));
