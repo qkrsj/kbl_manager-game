@@ -1,0 +1,11 @@
+{
+  "name": "kbl-manager",
+  "private": true,
+  "description": "KBL 매니저 게임 — 루트에서 설치/실행 명령을 한 번에",
+  "scripts": {
+    "setup": "node scripts/setup.mjs",
+    "start": "node scripts/start.mjs",
+    "new-game": "npm --prefix apps/server run seed",
+    "simulate": "npm --prefix apps/server run simulate"
+  }
+}

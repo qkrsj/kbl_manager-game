@@ -4,42 +4,87 @@ Football Manager · NBA2K 마이GM 스타일의 **KBL(한국프로농구) 매니
 2026-27 시즌부터 시작해 내가 고른 팀의 전술·출전시간·훈련·계약을 직접 관리하고,
 나머지 9개 팀은 실제 감독 성향에 따라 AI가 운영합니다.
 
-## 실행 방법
+## 설치와 실행 (처음 하는 분 기준)
 
-필요한 것: Node.js 22+, PostgreSQL 16
+### 1. 설치할 프로그램 3개
+
+| 프로그램 | 받는 곳 | 설치할 때 주의할 점 |
+|---|---|---|
+| **Node.js** (LTS, 22 이상) | https://nodejs.org → 왼쪽 "LTS" 버튼 | 기본값 그대로 "Next"만 누르면 됨 |
+| **PostgreSQL 16** | https://www.postgresql.org/download/ → 운영체제 선택 → "Download the installer" | ⚠️ 중간에 **`postgres` 계정 비밀번호**를 정하라고 나옴 → **꼭 기억하기** (설치 스크립트가 한 번 물어봄). 포트는 기본값 `5432` 그대로 |
+| **Git** (선택) | https://git-scm.com/downloads | 코드를 `git clone`으로 받을 때만 필요. 없으면 GitHub에서 ZIP으로 받아도 됨 |
+
+- **macOS**는 Homebrew가 있다면 터미널에서 `brew install node postgresql@16` 후 `brew services start postgresql@16`
+  (이 경우 `postgres` 계정 대신 **내 Mac 사용자 이름**이 관리자 계정이고 비밀번호가 없습니다 → 아래 2단계에서
+  `PGADMIN_USER=내사용자이름 npm run setup` 으로 실행하고 비밀번호 질문에는 그냥 Enter)
+- 설치가 끝났는지 확인: 터미널(Windows는 **명령 프롬프트** 또는 **PowerShell**)에서
+  ```
+  node -v      # v22.x.x 처럼 나오면 OK
+  npm -v
+  ```
+
+### 2. 게임 받고 최초 설치 (한 번만)
 
 ```bash
-# 1) DB 생성 (기본 접속 정보: kbl_app / devpassword @ localhost:5432 / kbl_manager)
-#    다른 값을 쓰려면 PGHOST, PGPORT, PGUSER, PGPASSWORD, PGDATABASE 환경변수로 지정
-createdb kbl_manager
+# 원하는 폴더에서 (ZIP으로 받았다면 압축 푼 폴더로 이동만 하면 됨)
+git clone https://github.com/qkrsj/kbl_manager-game.git
+cd kbl_manager-game
 
-# 2) 마이그레이션
-cd packages/db
-npm install
-DATABASE_URL=postgres://kbl_app:devpassword@localhost:5432/kbl_manager npm run migrate:up
-
-# 3) API 서버 (http://localhost:4000)
-cd ../../apps/server
-npm install
-npm run seed      # 2026-27 시즌 새 게임 생성
-npm start
-
-# 4) 웹 (http://localhost:5173)
-cd ../web
-npm install
-npm run dev
+npm run setup
 ```
 
-웹에서 **🔄 새 게임** → 운영할 팀을 고르면 시작됩니다 (기존 세이브는 초기화).
+`npm run setup`이 자동으로 하는 일:
+1. 서버·웹·DB 패키지 설치 (처음엔 몇 분 걸림)
+2. **PostgreSQL `postgres` 계정 비밀번호를 물어봄** → 1단계에서 정한 비밀번호 입력
+3. 게임 전용 DB 계정(`kbl_app`)과 DB(`kbl_manager`) 생성, 테이블 생성
+4. 2026-27 시즌 새 게임 데이터 생성
 
-| 명령 (apps/server) | 설명 |
+마지막에 `✅ 설치 완료!`가 나오면 성공입니다.
+
+### 3. 게임 실행 (할 때마다)
+
+```bash
+cd kbl_manager-game     # 게임 폴더에서
+npm start
+```
+
+- 터미널에 `[서버] ... listening on port 4000`, `[웹] ... http://localhost:5173` 이 보이면
+  **브라우저에서 http://localhost:5173** 을 엽니다.
+- 끌 때는 그 터미널에서 **Ctrl + C**. 진행 상황은 DB에 저장되어 있어 다시 `npm start` 하면 이어서 할 수 있습니다.
+- 처음 시작하면 기본 팀(창원 LG)으로 되어 있으니, 왼쪽 메뉴 **🔄 새 게임** 에서 운영할 팀을 고르세요.
+
+### 그 밖의 명령 (게임 폴더에서)
+
+| 명령 | 설명 |
 |---|---|
-| `npm start` / `npm run dev` | API 서버 실행 (dev는 파일 변경 시 자동 재시작) |
-| `npm run seed` | 새 게임 생성 |
-| `npm run simulate` | 한 시즌 → 플레이오프 → 비시즌 → 다음 시즌 시작까지 자동 진행해 결과 출력 (검증용) |
-| `npm run simulate -- --live` | 우리 팀 경기를 직접 지휘 모드(구간 진행)로 치르며 시뮬레이션 |
-| `npm run simulate -- --stop-at-offseason` | 비시즌 시작 직후에서 멈춤 |
-| `npm run typecheck` | 타입 검사 |
+| `npm run setup` | 최초 설치 (다시 실행해도 안전하지만, 마지막 단계에서 **세이브가 초기화**됨) |
+| `npm start` | 게임 실행 (서버 + 웹) |
+| `npm run new-game` | 세이브 초기화 후 새 게임 (화면의 🔄 새 게임과 같음) |
+| `npm run simulate` | 한 시즌 → 플레이오프 → 비시즌 → 다음 시즌 시작까지 자동 진행해 결과 출력 (⚠️ 세이브 초기화됨, 검증용) |
+
+### 문제가 생기면
+
+| 증상 | 해결 |
+|---|---|
+| `'npm'은(는) 내부 또는 외부 명령...이 아닙니다` | Node.js 설치 후 **터미널을 새로 열기**. 그래도 안 되면 PC 재시작 |
+| `PostgreSQL 접속 실패: password authentication failed` | `postgres` 비밀번호가 틀림. PostgreSQL 설치 때 정한 비밀번호 확인 |
+| `PostgreSQL 접속 실패: connect ECONNREFUSED` | PostgreSQL이 꺼져 있음. Windows: 시작 메뉴 → "서비스" → `postgresql-x64-16` 시작 / macOS(brew): `brew services start postgresql@16` |
+| 화면에 "세이브 데이터를 불러올 수 없습니다" | `npm start`를 한 터미널에 `[서버] ... listening on port 4000` 이 떴는지 확인 |
+| `port 4000(또는 5173) is already in use` | 이미 다른 터미널에서 게임이 켜져 있음. 그 터미널에서 Ctrl + C 후 다시 실행 |
+| PostgreSQL 포트가 5432가 아님 | `PGPORT=5433 npm run setup`, `PGPORT=5433 npm start` 처럼 포트를 지정 (Windows PowerShell: `$env:PGPORT=5433; npm start`) |
+
+### 개발자용 (수동 실행)
+
+설치 스크립트 없이 직접 하려면: DB 접속 기본값은 `kbl_app` / `devpassword` @ `localhost:5432` / `kbl_manager`
+(`PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD`, `PGDATABASE` 환경변수로 변경).
+
+```bash
+cd packages/db   && npm install && DATABASE_URL=postgres://kbl_app:devpassword@localhost:5432/kbl_manager npm run migrate:up
+cd apps/server   && npm install && npm run seed && npm run dev    # API http://localhost:4000 (파일 수정 시 자동 재시작)
+cd apps/web      && npm install && npm run dev                    # 웹 http://localhost:5173
+```
+`apps/server`에서 `npm run typecheck`(타입 검사), `npm run simulate -- --live`(직접 지휘 모드로 시뮬레이션),
+`npm run simulate -- --stop-at-offseason`(비시즌 시작 직후에서 멈춤)도 쓸 수 있습니다.
 
 ## 게임 방법
 
@@ -118,6 +163,8 @@ AI 출전시간은 선수 오버롤 순위로 정하고(외국선수 1옵션 약
 ## 프로젝트 구조
 
 ```
+package.json                 # npm run setup / npm start (루트 명령)
+scripts/                     # setup.mjs(최초 설치), start.mjs(서버+웹 동시 실행)
 apps/
 ├── server/                  # Express API (TypeScript, tsx로 실행)
 │   ├── src/
