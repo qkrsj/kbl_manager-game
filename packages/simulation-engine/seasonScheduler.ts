@@ -215,3 +215,119 @@ export function runSeason(
 
   return { standings, gameLogs, playerSeasonTotals };
 }
+
+// ============================================================
+// v1: 실제 달력 기반 KBL 일정 (2026-27 시즌 일정 원칙 반영)
+//  - 개막/종료일, 개막일 대진, 휴식기(FIBA 윈도우·올스타 브레이크)를 입력받아
+//    "평일 1경기, 주말(토·일) 3경기" 원칙으로 270경기를 날짜에 배정
+//  - 같은 팀이 하루 2경기 금지, 가능하면 연전(백투백) 회피
+// ============================================================
+
+export interface CalendarGame {
+  round: number;
+  date: string;   // YYYY-MM-DD
+  home: string;
+  away: string;
+}
+
+export interface CalendarScheduleOptions {
+  startDate: string;
+  endDate: string;
+  openingGames?: { home: string; away: string }[];
+  breaks?: { from: string; to: string }[];
+  timesEach?: number;
+}
+
+export function parseDate(d: string): Date {
+  const [y, m, day] = d.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, day));
+}
+
+export function formatDate(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
+
+export function addDays(d: string, n: number): string {
+  const dt = parseDate(d);
+  dt.setUTCDate(dt.getUTCDate() + n);
+  return formatDate(dt);
+}
+
+export function diffDays(a: string, b: string): number {
+  return Math.round((parseDate(a).getTime() - parseDate(b).getTime()) / 86400000);
+}
+
+export function generateKblCalendarSchedule(teams: string[], opts: CalendarScheduleOptions): CalendarGame[] {
+  const timesEach = opts.timesEach ?? 6;
+  const pairs = generateRoundRobinSchedule(teams, timesEach).map((g) => ({ round: g.round, home: g.home, away: g.away }));
+  const totalGames = pairs.length;
+
+  const inBreak = (d: string) => (opts.breaks ?? []).some((b) => d >= b.from && d <= b.to);
+
+  // 1) 날짜별 슬롯 수 산정: 토·일 3경기, 평일 1경기
+  const slotDates: { date: string; slots: number }[] = [];
+  for (let d = opts.startDate; d <= opts.endDate; d = addDays(d, 1)) {
+    if (inBreak(d)) continue;
+    const dow = parseDate(d).getUTCDay(); // 0=일, 6=토
+    slotDates.push({ date: d, slots: dow === 0 || dow === 6 ? 3 : 1 });
+  }
+  // 용량 조정: 경기 수 + 약간의 여유가 되도록 평일(수→목→화→금) 슬롯을 1개씩 추가, 넘치면 월요일부터 제거
+  const capacity = () => slotDates.reduce((a, s) => a + s.slots, 0);
+  const target = totalGames + 4;
+  const weekdayOrder = [3, 4, 2, 5, 1];
+  for (const dow of weekdayOrder) {
+    for (const s of slotDates) {
+      if (capacity() >= target) break;
+      if (parseDate(s.date).getUTCDay() === dow && s.slots === 1) s.slots = 2;
+    }
+  }
+  for (const s of slotDates) {
+    if (capacity() <= target) break;
+    if (parseDate(s.date).getUTCDay() === 1 && s.date !== opts.startDate) s.slots = 0;
+  }
+
+  // 2) 개막일 대진 고정
+  const remaining = [...pairs];
+  const result: CalendarGame[] = [];
+  const lastPlayed = new Map<string, string>();
+  const playedOn = new Map<string, Set<string>>();
+  const place = (date: string, g: { round: number; home: string; away: string }) => {
+    result.push({ round: g.round, date, home: g.home, away: g.away });
+    lastPlayed.set(g.home, date);
+    lastPlayed.set(g.away, date);
+    if (!playedOn.has(date)) playedOn.set(date, new Set());
+    playedOn.get(date)!.add(g.home).add(g.away);
+  };
+  for (const og of opts.openingGames ?? []) {
+    const idx = remaining.findIndex((p) => p.home === og.home && p.away === og.away);
+    const idx2 = idx >= 0 ? idx : remaining.findIndex((p) => p.home === og.away && p.away === og.home);
+    if (idx2 < 0) continue;
+    const g = remaining.splice(idx2, 1)[0];
+    place(opts.startDate, { round: g.round, home: og.home, away: og.away });
+  }
+
+  // 3) 탐욕 배정: 리그 진행 순서(라운드)를 최대한 유지하면서 하루 2경기·연전 회피
+  for (const s of slotDates) {
+    const already = playedOn.get(s.date)?.size ?? 0;
+    let slots = s.slots - already / 2;
+    while (slots > 0 && remaining.length > 0) {
+      const busy = playedOn.get(s.date) ?? new Set<string>();
+      const prev = addDays(s.date, -1);
+      const window = remaining.slice(0, 40);
+      let idx = window.findIndex((p) => !busy.has(p.home) && !busy.has(p.away) && lastPlayed.get(p.home) !== prev && lastPlayed.get(p.away) !== prev);
+      if (idx < 0) idx = window.findIndex((p) => !busy.has(p.home) && !busy.has(p.away));
+      if (idx < 0) break;
+      place(s.date, remaining.splice(idx, 1)[0]);
+      slots--;
+    }
+  }
+  // 4) 혹시 남은 경기가 있으면 종료일 이후 날짜에 이어 붙임 (안전장치)
+  let extra = addDays(opts.endDate, 1);
+  while (remaining.length > 0) {
+    const busy = playedOn.get(extra) ?? new Set<string>();
+    const idx = remaining.findIndex((p) => !busy.has(p.home) && !busy.has(p.away));
+    if (idx < 0) { extra = addDays(extra, 1); continue; }
+    place(extra, remaining.splice(idx, 1)[0]);
+  }
+  return result.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+}

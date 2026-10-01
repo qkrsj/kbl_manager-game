@@ -51,10 +51,16 @@ export function toLineupPlayer(p: RosterPlayer): LineupPlayer {
   };
 }
 
-/** 5 이상은 연장전(OT)으로 취급 — Q1/Q4와 동일하게 용병 1명 규칙 적용 */
+/**
+ * 쿼터별 코트 위 외국선수 최대 인원 (2026-27 KBL 규정: 1·4쿼터 1명, 2·3쿼터 2명 동시 출전 가능).
+ * 5 이상은 연장전(OT)으로 취급 — Q1/Q4와 동일하게 1명.
+ * AI 로테이션은 가능한 최대 인원을 항상 채운다.
+ */
 export function requiredForeignCount(quarter: number): number {
   return quarter === 2 || quarter === 3 ? 2 : 1;
 }
+
+export const maxForeignOnCourt = requiredForeignCount;
 
 /** 표준 라인업 구성 가정: 가드2 + 포워드2 + 센터1 */
 const TARGET_POSITION_COUNTS: Record<PositionGroup, number> = { G: 2, F: 2, C: 1 };
@@ -129,4 +135,86 @@ export function selectLineup(
   }
 
   return selectedSoFar;
+}
+
+// ============================================================
+// v1: 구간(5분) 단위 로테이션 — 실제 교체처럼 "구간 동안 코트에 있는 5명"을 고정
+// ============================================================
+
+export interface RotationCandidate extends LineupPlayer {
+  targetMinutes: number;   // 감독(또는 유저)이 정한 목표 출전시간
+  minutesPlayed: number;   // 이번 경기에서 지금까지 뛴 시간
+  energy: number;          // 0~100, 경기 중 체력
+  overall: number;
+}
+
+/**
+ * 다음 구간에 코트에 설 5명을 고른다.
+ *  - 목표 출전시간 대비 "뒤처진 정도"(deficit)가 큰 선수부터 우선 투입 → 장기적으로 목표시간에 수렴
+ *  - 체력이 떨어진 선수는 우선순위 하락 (자연스러운 교체)
+ *  - 경기 첫 구간은 목표 출전시간이 가장 긴 선수들(주전)로 시작
+ *  - 클로징(4쿼터 후반·연장)은 접전이면 종합능력치 상위로 마무리
+ *  - 외국선수는 쿼터 규정 인원만큼, 나머지는 가드2/포워드2/센터1 구성 우선
+ */
+export function chooseRotationLineup(
+  pool: RotationCandidate[],
+  quarter: number,
+  elapsedMinutes: number,
+  segmentMinutes: number,
+  opts: { closing?: boolean } = {}
+): RotationCandidate[] {
+  const isOpening = elapsedMinutes === 0;
+  const projected = elapsedMinutes + segmentMinutes;
+  const score = (p: RotationCandidate): number => {
+    if (opts.closing) return p.overall * (0.6 + 0.4 * p.energy / 100) + (p.targetMinutes > 0 ? 5 : -50);
+    if (isOpening) return p.targetMinutes + p.overall * 0.01;
+    const expected = (p.targetMinutes / 40) * projected;
+    const deficit = expected - p.minutesPlayed;
+    const tired = p.energy < 55 ? (55 - p.energy) * 0.25 : 0;
+    const jitter = Math.random() * 1.5;
+    return deficit - tired + jitter + (p.targetMinutes > 0 ? 0 : -100);
+  };
+  const ranked = [...pool].sort((a, b) => score(b) - score(a));
+
+  const foreignMax = maxForeignOnCourt(quarter);
+  const chosen: RotationCandidate[] = [];
+  const foreign = ranked.filter((p) => p.isForeign).slice(0, foreignMax);
+  chosen.push(...foreign);
+
+  const filled: Record<PositionGroup, number> = { G: 0, F: 0, C: 0 };
+  chosen.forEach((p) => filled[p.positionGroup]++);
+  const domestic = ranked.filter((p) => !p.isForeign);
+  (["G", "C", "F"] as PositionGroup[]).forEach((group) => {
+    const need = Math.max(0, TARGET_POSITION_COUNTS[group] - filled[group]);
+    // 목표 출전시간을 이미 크게 넘긴 선수는 포지션 때문에 억지로 투입하지 않음 (다른 포지션으로 대체)
+    const overTarget = (p: RotationCandidate) =>
+      !opts.closing && !isOpening && p.minutesPlayed - (p.targetMinutes / 40) * elapsedMinutes > 1.5;
+    domestic.filter((p) => p.positionGroup === group && !chosen.includes(p) && !overTarget(p)).slice(0, need).forEach((p) => {
+      chosen.push(p);
+      filled[group]++;
+    });
+  });
+  // 포지션 구성으로 다 못 채우면(특정 포지션 부족) 남은 국내선수 순위대로
+  for (const p of domestic) {
+    if (chosen.length >= 5) break;
+    if (!chosen.includes(p)) chosen.push(p);
+  }
+  // 그래도 부족하면(국내선수 부족) 규정 내에서 외국선수까지
+  for (const p of ranked) {
+    if (chosen.length >= 5) break;
+    if (!chosen.includes(p) && (!p.isForeign || chosen.filter((c) => c.isForeign).length < foreignMax)) chosen.push(p);
+  }
+  return chosen.slice(0, 5);
+}
+
+/** 유저가 직접 지정한 5명이 규정에 맞는지 검증 (null = OK, 문자열 = 오류 메시지) */
+export function validateManualLineup(lineup: LineupPlayer[], quarter: number): string | null {
+  if (lineup.length !== 5) return `코트에는 정확히 5명이 있어야 합니다 (현재 ${lineup.length}명)`;
+  const foreignCount = lineup.filter((p) => p.isForeign).length;
+  const max = maxForeignOnCourt(quarter);
+  if (foreignCount > max) {
+    const label = quarter >= 5 ? "연장전" : `${quarter}쿼터`;
+    return `${label}에는 외국선수가 최대 ${max}명까지만 뛸 수 있습니다 (현재 ${foreignCount}명)`;
+  }
+  return null;
 }
