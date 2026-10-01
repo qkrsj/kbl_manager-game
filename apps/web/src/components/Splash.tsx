@@ -6,12 +6,18 @@ import "./splash.css";
  * KM27 로딩(타이틀) 화면 — NBA 2K 표지 스타일
  *
  * 이미지 교체: apps/web/public/splash/ 폴더에
- *   - player.png      중앙 선수 사진 (배경이 투명한 누끼 PNG 권장, 세로형)
+ *   - player.png      표지 선수 사진 (배경이 투명한 누끼 PNG, 여러 명 합성도 가능 — 현재 3인 합성본)
  *   - background.jpg  경기장 배경 사진 (가로형)
  * 을 넣으면 자동으로 사용하고, 없으면 기본 일러스트/경기장 그래픽을 보여준다.
  */
 
 const COVER_ATHLETE = { name: "변준형", nameEn: "BYUN JUN-HYUNG", team: "안양 정관장 레드부스터스" };
+/** player.png(3인 합성 표지)를 쓸 때 표시하는 커버 선수들 — 화면 왼쪽부터 */
+const COVER_TRIO = [
+  { name: "이정현", nameEn: "LEE JUNG-HYUN", team: "고양 소노" },
+  { name: "변준형", nameEn: "BYUN JUN-HYUNG", team: "안양 정관장" },
+  { name: "허훈", nameEn: "HUR HOON", team: "부산 KCC" },
+];
 
 const TIPS = [
   "2·3쿼터에는 외국선수 2명이 동시에 코트에 설 수 있습니다",
@@ -179,14 +185,23 @@ export function Splash({ onDone }: { onDone: () => void }) {
       </div>
 
       <div className="splash-player">
-        {playerImg ? <img src="/splash/player.png" alt={COVER_ATHLETE.name} /> : <PlayerIllustration />}
+        {playerImg ? <img src="/splash/player.png" alt={COVER_TRIO.map((a) => a.name).join(", ")} /> : <PlayerIllustration />}
       </div>
 
-      <div className="splash-cover-tag">
-        <div className="label">COVER ATHLETE</div>
-        <div className="name">{COVER_ATHLETE.nameEn}</div>
-        <div className="team">{COVER_ATHLETE.name} · {COVER_ATHLETE.team}</div>
-      </div>
+      {playerImg ? (
+        <div className="splash-cover-tag">
+          <div className="label">COVER ATHLETES</div>
+          {COVER_TRIO.map((a) => (
+            <div key={a.name} className="trio-row"><span className="name small-name">{a.nameEn}</span><span className="team">{a.name} · {a.team}</span></div>
+          ))}
+        </div>
+      ) : (
+        <div className="splash-cover-tag">
+          <div className="label">COVER ATHLETE</div>
+          <div className="name">{COVER_ATHLETE.nameEn}</div>
+          <div className="team">{COVER_ATHLETE.name} · {COVER_ATHLETE.team}</div>
+        </div>
+      )}
 
       <div className="splash-bottom">
         <div className="splash-sub">KBL MANAGER 2026-27</div>

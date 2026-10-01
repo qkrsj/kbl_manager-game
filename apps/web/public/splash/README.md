@@ -10,3 +10,12 @@
 - 파일이 없으면 기본 정관장 유니폼 일러스트와 경기장 그래픽이 나옵니다.
 - 배경 지우기는 remove.bg 같은 서비스나 포토샵/미리보기 앱의 "배경 제거"를 쓰면 됩니다.
 - 실제 선수 사진은 초상권·저작권이 있으니 개인적으로만 사용하세요 (이 폴더의 이미지는 git에 올리지 않도록 설정되어 있습니다).
+
+## 선수 여러 명을 합쳐서 표지 만들기
+
+`apps/web/scripts/make_cover.py`가 선수 사진 3장을 자동으로 오려서(배경 제거) 2K 표지처럼 합성해 `player.png`를 만듭니다.
+
+```bash
+pip install "rembg[cpu]" pillow numpy scipy
+python apps/web/scripts/make_cover.py 가운데선수.jpg 왼쪽선수.jpg 오른쪽선수.jpg
+```
