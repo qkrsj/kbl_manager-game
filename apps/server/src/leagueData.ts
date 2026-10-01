@@ -11,6 +11,25 @@ import { computeSimulationInternals, SimStatLine } from "../../../packages/simul
 import { SimPlayer, DisplayAttrs, SimulationInternals } from "../../../packages/simulation-engine/possession";
 
 const DATA_DIR = path.join(__dirname, "../../../data/processed");
+const MANUAL_DIR = path.join(__dirname, "../../../data/manual");
+/** 2026-27 정규시즌 개막일 — 능력치 산정의 나이 기준 */
+export const SEASON_START_DATE = "2026-10-03";
+
+/** players_enriched.json에 생년월일이 없는 선수(KBL 첫 시즌 외국선수, 출전 기록 없는 신인)의 생년월일 */
+export function readManualBirthDates(): Map<string, string> {
+  const file = path.join(MANUAL_DIR, "birth_dates.csv");
+  if (!fs.existsSync(file)) return new Map();
+  const { header, rows } = parseCsv(fs.readFileSync(file, "utf-8"));
+  const n = header.indexOf("name"), b = header.indexOf("birth_date");
+  return new Map(rows.filter((r) => r[n] && r[b]).map((r) => [r[n], r[b]]));
+}
+
+export function ageOnDate(birthDate: string, onDate: string): number {
+  const b = new Date(birthDate), d = new Date(onDate);
+  let age = d.getFullYear() - b.getFullYear();
+  if (d.getMonth() < b.getMonth() || (d.getMonth() === b.getMonth() && d.getDate() < b.getDate())) age--;
+  return age;
+}
 
 function parseCsv(content: string): { header: string[]; rows: string[][] } {
   const lines = content.trim().split(/\r?\n/);
@@ -30,7 +49,8 @@ export interface LeagueData {
   nameIdx: number;
   posIdx: number;
   teamNames: string[];
-  /** 해외리그 기록으로 평가한 선수 (KBL 첫 시즌 / 마지막 KBL 시즌이 3년 이상 지난 선수) */
+  birthDates: Map<string, string>;
+  /** 해외리그 기록으로 평가한 선수 (KBL 첫 시즌 / 마지막 KBL 시즌이 5년 이상 지난 선수) */
   overseas: Map<string, OverseasEvaluation>;
   buildTeamRoster: (teamName: string) => SimPlayer[];
 }
@@ -39,6 +59,14 @@ export function loadLeagueData(): LeagueData {
   const raw = JSON.parse(
     fs.readFileSync(path.join(DATA_DIR, "players_enriched.json"), "utf-8")
   ) as (PlayerInput & { nationality: string; birthDate?: string })[];
+
+  // 나이는 2026-27 개막일 기준으로 다시 계산 (players_enriched.json의 나이는 2025-26 시즌 기준이라 1살 적음)
+  const birthDates = readManualBirthDates();
+  for (const p of raw) {
+    if (!p.birthDate && birthDates.has(p.name)) p.birthDate = birthDates.get(p.name);
+    if (p.birthDate) p.ageAtSeasonStart = ageOnDate(p.birthDate, SEASON_START_DATE);
+    if (p.birthDate) birthDates.set(p.name, p.birthDate);
+  }
 
   const rosterCsv = parseCsv(fs.readFileSync(path.join(DATA_DIR, "roster.csv"), "utf-8"));
   const teamIdx = rosterCsv.header.indexOf("team");
@@ -49,7 +77,7 @@ export function loadLeagueData(): LeagueData {
   const wIdx = rosterCsv.header.indexOf("weight_kg");
 
   // 해외리그 기록 → KBL 환산 시즌 1줄로 바꿔서 KBL 선수와 같은 파이프라인에 넣는다.
-  // (KBL 기록이 없는 선수는 새로 추가, 마지막 KBL 시즌이 3년 이상 지난 선수는 KBL 기록 대신 사용)
+  // (KBL 기록이 없는 선수는 새로 추가, 마지막 KBL 시즌이 5년 이상 지난 선수는 KBL 기록 대신 사용)
   const rosterInfo = new Map(rosterCsv.rows.map((c) => [c[nameIdx], { position: c[posIdx], nationality: c[natIdx] }]));
   const overseas = buildOverseasEvaluations(raw, rosterInfo);
   for (const [name, ev] of overseas) {
@@ -58,8 +86,10 @@ export function loadLeagueData(): LeagueData {
       existing.seasons = [ev.line];
     } else {
       const cols = rosterCsv.rows.find((c) => c[nameIdx] === name)!;
+      const birthDate = birthDates.get(name);
       raw.push({
-        playerId: name, name, ageAtSeasonStart: 27, draftInfo: { kind: "foreign_or_naturalized" },
+        playerId: name, name, ageAtSeasonStart: birthDate ? ageOnDate(birthDate, SEASON_START_DATE) : 27,
+        draftInfo: { kind: "foreign_or_naturalized" }, birthDate,
         nationality: cols[natIdx], seasons: [ev.line],
         heightCm: Number(cols[hIdx]) || null, weightKg: Number(cols[wIdx]) || null,
       });
@@ -126,5 +156,5 @@ export function loadLeagueData(): LeagueData {
     });
   }
 
-  return { raw, derivedMap, rosterCsv, teamIdx, nameIdx, posIdx, teamNames, overseas, buildTeamRoster };
+  return { raw, derivedMap, rosterCsv, teamIdx, nameIdx, posIdx, teamNames, birthDates, overseas, buildTeamRoster };
 }

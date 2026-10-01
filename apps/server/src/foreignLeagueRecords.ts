@@ -3,7 +3,8 @@
  *
  * 대상
  *   1) KBL 기록이 없는 선수 (KBL 첫 시즌)
- *   2) 마지막 KBL 시즌이 3년 이상 지난 선수 (예: 2023-24 이전) — KBL 기록 대신 최근 해외리그 기록으로 평가
+ *   2) 마지막 KBL 시즌이 5년 이상 지난 선수 (2021-22 이전) — KBL 기록 대신 최근 해외리그 기록으로 평가
+ *   (5년이 안 지난 KBL 경력자는 KBL 기록으로 평가하고, 아래 기록은 참고용으로만 남겨 둠)
  *
  * 시즌마다 리그·경기수·출전시간·경기당 기록을 적는다. 모르는 항목은 null로 두면
  * overseasEvaluation.ts가 (1) 같은 선수의 다른 시즌 기록 → (2) 같은 포지션 KBL 선수 중앙값 순서로 채운다.
@@ -100,7 +101,7 @@ export const OVERSEAS_RECORDS: OverseasPlayerRecord[] = [
     seasons: [
       s({ season: "2025-26", endYear: 2026, league: "B1", team: "알티리 지바", G: 58, MIN: 23.0, PTS: 11.7, REB: 7.9, AST: 1.4, BLK: 1.1, STL: 0.4, TO: 1.0, FG: 0.636, FT: 0.738 }),
     ],
-    note: "불가리아 2020-21 기록은 3년 이상 지나 제외",
+    note: "불가리아 2020-21 기록은 해외 기록 반영 기간(최근 3년)을 벗어나 제외",
   },
   {
     name: "스카티 제임스",
@@ -126,7 +127,7 @@ export const OVERSEAS_RECORDS: OverseasPlayerRecord[] = [
     note: "UAAP 시즌88(UP)은 시즌 평균이 확인되지 않아 제외",
   },
 
-  // ---------------- 마지막 KBL 시즌이 3년 이상 지난 선수 ----------------
+  // ---------------- KBL 경력자 (마지막 KBL 시즌이 5년 이상 지났을 때만 사용) ----------------
   {
     name: "패리스 배스",
     seasons: [
@@ -134,7 +135,7 @@ export const OVERSEAS_RECORDS: OverseasPlayerRecord[] = [
       s({ season: "2025", endYear: 2025, league: "BSN", team: "폰세", PTS: 12.9, REB: 6.2, AST: 2.6 }),
       s({ season: "2024-25", endYear: 2025, league: "CBA", team: "저장", G: 20, PTS: 17.2, REB: 8.3 }),
     ],
-    note: "마지막 KBL 2023-24 (KT, 25.4점) → 해외 기록으로 평가",
+    note: "마지막 KBL 2023-24 (KT) — 5년이 안 지나 KBL 기록으로 평가 (참고용)",
   },
   {
     name: "케베 알루마",
@@ -142,7 +143,7 @@ export const OVERSEAS_RECORDS: OverseasPlayerRecord[] = [
       s({ season: "2025-26", endYear: 2026, league: "B1", team: "류큐", G: 7, MIN: 20.1, PTS: 11.0, REB: 4.1 }),
       s({ season: "2024-25", endYear: 2025, league: "B1", team: "류큐", G: 55, PTS: 20.8, REB: 8.7, AST: 3.0, FG: 0.478, TP: 0.397, FT: 0.796 }),
     ],
-    note: "마지막 KBL 2023-24 (현대모비스) → 해외 기록으로 평가",
+    note: "마지막 KBL 2023-24 (현대모비스) — 5년이 안 지나 KBL 기록으로 평가 (참고용)",
   },
   {
     name: "라숀 토마스",
@@ -151,13 +152,13 @@ export const OVERSEAS_RECORDS: OverseasPlayerRecord[] = [
       s({ season: "2024-25", endYear: 2025, league: "LBA", team: "사사리", G: 8, PTS: 13.8, REB: 7.8 }),
       s({ season: "2024-25", endYear: 2025, league: "CBA", team: "푸젠", G: 10, PTS: 8.1, REB: 3.6 }),
     ],
-    note: "마지막 KBL 2021-22 (현대모비스) → 해외 기록으로 평가",
+    note: "마지막 KBL 2021-22 (현대모비스) → 5년 지나 해외 기록으로 평가",
   },
   {
     name: "크리스 맥컬러",
     seasons: [
       s({ season: "2026", endYear: 2026, league: "BSN", team: "바야몬", G: 16, MIN: 21.4, PTS: 11.7, REB: 5.2, AST: 1.3 }),
     ],
-    note: "마지막 KBL 2020-21 (KGC) → 해외 기록으로 평가",
+    note: "마지막 KBL 2020-21 (KGC) → 5년 이상 지나 해외 기록으로 평가",
   },
 ];

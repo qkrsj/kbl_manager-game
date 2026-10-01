@@ -1,7 +1,7 @@
 /**
  * KBL Manager — 해외리그 기록 → KBL 환산 시즌 기록
  *
- * KBL 기록이 없거나 마지막 KBL 시즌이 3년 이상 지난 외국선수·아시아쿼터는
+ * KBL 기록이 없거나 마지막 KBL 시즌이 5년 이상 지난 외국선수·아시아쿼터는
  * foreignLeagueRecords.ts의 해외 기록을 KBL 기준 경기당 기록(SeasonStatLine)으로 바꿔서,
  * KBL 선수와 똑같은 능력치 파이프라인(attributeConversion)·수준 보정(ratingCalibration)에 넣는다.
  *
@@ -25,8 +25,8 @@ export const LATEST_END_YEAR = 2026;
 export const RECENCY_DECAY = 0.5;
 /** 최근 3개 연도(2024~2026)까지만 반영 */
 const WINDOW_YEARS = 3;
-/** 마지막 KBL 시즌 종료 연도가 이 해 이하이면(= 2026-27 기준 3년 이상 지남) 해외 기록으로 평가 */
-export const KBL_STALE_END_YEAR = 2024;
+/** 마지막 KBL 시즌 종료 연도가 이 해 이하이면(= 2026-27 기준 5년 이상 지남, 2021-22 시즌 이전) 해외 기록으로 평가 */
+export const KBL_STALE_END_YEAR = 2022;
 const DEFAULT_GAMES = 15;
 const MIN_EST_FLOOR = 18;
 const MIN_EST_CEIL = 34;
@@ -128,7 +128,7 @@ export function buildOverseasEvaluations(
     if (!meta) continue;
     const kbl = raw.find((p) => p.name === rec.name);
     const lastKbl = kbl && kbl.seasons.length ? kbl.seasons[kbl.seasons.length - 1].season : null;
-    // 최근 3년 안에 KBL에서 뛴 선수는 KBL 기록 그대로 평가
+    // 최근 5년 안에 KBL에서 뛴 선수는 KBL 기록 그대로 평가
     if (lastKbl && endYearOfKblSeason(lastKbl) > KBL_STALE_END_YEAR) continue;
 
     const group: Group = meta.nationality === "KOR" || meta.nationality === "PHI" ? "local" : "foreign";

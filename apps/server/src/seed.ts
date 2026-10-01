@@ -3,7 +3,7 @@
  *
  * 2026-27 시즌 시작 시점의 리그를 만든다.
  *  - 팀/선수/능력치: players_enriched.json(실측 기록) + roster.csv(2026-27 로스터)
- *    · KBL 기록이 없거나 마지막 KBL 시즌이 3년 이상 지난 외국선수·아시아쿼터는
+ *    · KBL 기록이 없거나 마지막 KBL 시즌이 5년 이상 지난 외국선수·아시아쿼터는
  *      해외리그 기록을 KBL 기준으로 환산해 같은 방식으로 평가 (overseasEvaluation.ts)
  *  - 시뮬레이션 프로필(실제 슛 확률 등): player_sim_profile
  *  - 계약(2026-27 보수, FA 년도): data/processed/contracts_2026_27.csv
@@ -15,7 +15,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { Pool } from "pg";
-import { loadLeagueData } from "./leagueData";
+import { loadLeagueData, ageOnDate, SEASON_START_DATE } from "./leagueData";
 import { poolRecentSeasons, sampleReliability } from "../../../packages/attribute-pipeline/attributeConversion";
 import { calibrateRatings, CalibrationGroup, shiftToOverall } from "./ratingCalibration";
 import { generateKblCalendarSchedule } from "../../../packages/simulation-engine/seasonScheduler";
@@ -25,13 +25,6 @@ import { simProfileFromAttrs } from "./generatedPlayers";
 import { insertSchedule } from "./offseason";
 
 const SEASON_YEAR = 2026;
-/** 2026-27 개막일 기준 만 나이 — 해외 기록으로 평가하는 선수용 (기록상 나이는 마지막 KBL 시즌 기준이라 몇 년 전 나이임) */
-function ageAtSeasonStart(p: { birthDate?: string; ageAtSeasonStart: number } | undefined): number {
-  if (!p) return 27;
-  if (!p.birthDate) return p.ageAtSeasonStart ?? 27;
-  const b = new Date(p.birthDate), s = new Date("2026-10-03");
-  return s.getFullYear() - b.getFullYear() - (s < new Date(s.getFullYear(), b.getMonth(), b.getDate()) ? 1 : 0);
-}
 const SEASON_LABEL = "2026-2027";
 const SEASON_START = "2026-10-03";
 const SEASON_END = "2027-04-11";
@@ -110,7 +103,7 @@ export async function seedDatabase(pool: Pool, userTeam?: number | string, log: 
                playoff_series, franchise, player_attributes, players, seasons, teams RESTART IDENTITY CASCADE`);
 
     log("[seed] players_enriched.json / roster.csv 로딩...");
-    const { raw, derivedMap, teamNames, rosterCsv, teamIdx, nameIdx, posIdx, overseas, buildTeamRoster } = loadLeagueData();
+    const { raw, derivedMap, teamNames, rosterCsv, teamIdx, nameIdx, posIdx, birthDates, overseas, buildTeamRoster } = loadLeagueData();
     const contracts = readContracts();
 
     const teamIdByName = new Map<string, number>();
@@ -184,7 +177,7 @@ export async function seedDatabase(pool: Pool, userTeam?: number | string, log: 
       const type = dr.contract?.type ?? (dr.isForeign ? "foreign" : dr.meta.nationality === "PHI" ? "asia" : "domestic");
       return {
         name: dr.name, group: type as CalibrationGroup, positionGroup: dr.positionGroup,
-        age: overseas.has(dr.name) ? ageAtSeasonStart(dr.p) : dr.p?.ageAtSeasonStart ?? 27, attrs: dr.attrs, pooled, seasons: dr.p?.seasons ?? [], reliability: sampleReliability(pooled),
+        age: dr.p?.ageAtSeasonStart ?? (birthDates.has(dr.name) ? ageOnDate(birthDates.get(dr.name)!, SEASON_START_DATE) : 27), attrs: dr.attrs, pooled, seasons: dr.p?.seasons ?? [], reliability: sampleReliability(pooled),
         salaryKrw: type === "domestic" ? dr.contract?.krw ?? null : null,
         salaryReported: dr.contract?.source === "reported",
         overseas: overseas.has(dr.name),
@@ -204,7 +197,7 @@ export async function seedDatabase(pool: Pool, userTeam?: number | string, log: 
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`,
         [
           name, teamId, meta.nationality, meta.position, positionGroup,
-          p?.heightCm ?? null, p?.weightKg ?? null, p?.birthDate ?? null, isForeign,
+          p?.heightCm ?? null, p?.weightKg ?? null, p?.birthDate ?? birthDates.get(name) ?? null, isForeign,
           p?.draftInfo?.kind === "picked" ? ((p as any)?.draftYear ?? null) : null,
           p?.draftInfo?.kind === "picked" ? (p.draftInfo as any).overallPick : null,
           p?.draftInfo?.kind ?? null,
