@@ -1,0 +1,169 @@
+/* KM27 로딩 화면 — 항상 어두운 경기장 톤 (라이트/다크 모드 무관) */
+.splash {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  overflow: hidden;
+  background: radial-gradient(ellipse at 50% 30%, #1d2a4a 0%, #0a0f1e 55%, #03050b 100%);
+  color: #fff;
+  font-family: "Pretendard", system-ui, sans-serif;
+  cursor: default;
+  transition: opacity 0.7s ease, transform 0.7s ease;
+}
+.splash.leaving { opacity: 0; transform: scale(1.04); }
+
+/* ---------- 배경 ---------- */
+.splash-photo-bg {
+  position: absolute; inset: -20px;
+  background-size: cover; background-position: center;
+  filter: blur(3px) brightness(0.55) saturate(1.2);
+  animation: splash-pan 18s ease-in-out infinite alternate;
+}
+.splash-arena { position: absolute; inset: 0; animation: splash-pan 18s ease-in-out infinite alternate; }
+.splash-lights {
+  position: absolute; inset: 0;
+  background:
+    radial-gradient(circle at 18% 6%, rgba(255, 244, 214, 0.55) 0, transparent 18%),
+    radial-gradient(circle at 50% 0%, rgba(255, 255, 255, 0.45) 0, transparent 22%),
+    radial-gradient(circle at 82% 6%, rgba(255, 244, 214, 0.55) 0, transparent 18%),
+    linear-gradient(180deg, rgba(200, 16, 46, 0.18) 0%, transparent 60%);
+}
+.splash-bokeh {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(1.5px);
+  animation: splash-twinkle 4s ease-in-out infinite;
+}
+.splash-floor {
+  position: absolute; left: -20%; right: -20%; bottom: -6%; height: 42%;
+  background: linear-gradient(180deg, #b9773d 0%, #d89a5c 40%, #8a5226 100%);
+  transform: perspective(600px) rotateX(58deg);
+  transform-origin: bottom;
+  box-shadow: 0 -40px 80px rgba(0, 0, 0, 0.6) inset;
+}
+.splash-floor svg { width: 100%; height: 100%; display: block; opacity: 0.9; }
+.splash-streaks {
+  position: absolute; inset: 0;
+  background:
+    linear-gradient(115deg, transparent 40%, rgba(200, 16, 46, 0.35) 47%, transparent 54%),
+    linear-gradient(65deg, transparent 44%, rgba(255, 255, 255, 0.12) 49%, transparent 54%);
+  mix-blend-mode: screen;
+  animation: splash-sweep 6s ease-in-out infinite;
+}
+.splash::after {
+  /* 하단 로딩 문구가 잘 읽히도록 어두운 띠 */
+  content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 24vh; z-index: 4;
+  background: linear-gradient(180deg, transparent 0%, rgba(3, 5, 11, 0.85) 60%, rgba(3, 5, 11, 0.95) 100%);
+  pointer-events: none;
+}
+.splash-vignette {
+  position: absolute; inset: 0;
+  background: radial-gradient(ellipse at 50% 45%, transparent 35%, rgba(0, 0, 0, 0.75) 100%);
+}
+
+/* ---------- 타이틀 KM27 ---------- */
+.splash-title {
+  position: absolute; top: 4vh; left: 50%;
+  transform: translateX(-50%);
+  display: flex; align-items: center; gap: clamp(10px, 1.6vw, 22px);
+  z-index: 2;
+  animation: splash-title-in 0.9s cubic-bezier(0.2, 0.9, 0.2, 1.1) both;
+}
+.splash-title h1 {
+  margin: 0;
+  font-family: "Anton", Impact, "Arial Black", sans-serif;
+  font-size: clamp(88px, 17vw, 250px);
+  line-height: 0.9;
+  letter-spacing: 0.01em;
+  font-style: italic;
+  transform: skewX(-8deg);
+  text-shadow: 0 10px 40px rgba(0, 0, 0, 0.7);
+  color: #fff;
+}
+.splash-title .km { color: #fff; -webkit-text-stroke: 2px rgba(0, 0, 0, 0.15); }
+.splash-title .yr {
+  background: linear-gradient(180deg, #ff4258 0%, #c8102e 55%, #7d0716 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  filter: drop-shadow(0 8px 20px rgba(200, 16, 46, 0.45));
+}
+.splash-badge {
+  width: clamp(44px, 5.5vw, 78px);
+  height: clamp(80px, 10vw, 140px);
+  border-radius: 10px;
+  background: linear-gradient(180deg, #1d428a 0 50%, #c8102e 50% 100%);
+  border: 3px solid #fff;
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+.splash-badge span {
+  writing-mode: vertical-rl;
+  font-family: "Anton", Impact, sans-serif;
+  font-size: clamp(16px, 2vw, 28px);
+  letter-spacing: 0.08em;
+}
+
+/* ---------- 선수 ---------- */
+.splash-player {
+  position: absolute; left: 50%; bottom: 0;
+  height: 82vh;
+  transform: translateX(-50%);
+  z-index: 3;
+  display: flex; align-items: flex-end; justify-content: center;
+  animation: splash-player-in 1s 0.15s cubic-bezier(0.2, 0.9, 0.2, 1) both;
+  filter: drop-shadow(0 0 28px rgba(255, 80, 100, 0.35)) drop-shadow(0 20px 40px rgba(0, 0, 0, 0.8));
+}
+.splash-player img { height: 100%; width: auto; object-fit: contain; }
+.splash-player-svg { height: 100%; width: auto; }
+.splash-ball { animation: splash-dribble 0.55s ease-in infinite alternate; transform-box: fill-box; }
+
+/* ---------- 커버 선수 태그 / 하단 ---------- */
+.splash-cover-tag {
+  position: absolute; left: clamp(16px, 5vw, 80px); bottom: 22vh;
+  z-index: 4;
+  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.8);
+  animation: splash-fade-up 0.8s 0.6s both;
+}
+.splash-cover-tag .label { font-size: 12px; letter-spacing: 0.3em; color: #ff6a7d; font-weight: 700; }
+.splash-cover-tag .name {
+  font-family: "Anton", Impact, sans-serif; font-style: italic;
+  font-size: clamp(26px, 3.2vw, 46px); line-height: 1.05;
+}
+.splash-cover-tag .team { font-size: 14px; color: #d8dbe4; }
+
+.splash-bottom {
+  position: absolute; left: 50%; bottom: 4vh;
+  transform: translateX(-50%);
+  width: min(560px, calc(100vw - 32px));
+  z-index: 5;
+  text-align: center;
+  animation: splash-fade-up 0.8s 0.4s both;
+}
+.splash-sub { font-size: 13px; letter-spacing: 0.4em; color: #c9cede; margin-bottom: 10px; text-shadow: 0 2px 8px #000; }
+.splash-progress { height: 6px; border-radius: 999px; background: rgba(255, 255, 255, 0.15); overflow: hidden; backdrop-filter: blur(4px); }
+.splash-progress > div {
+  height: 100%;
+  background: linear-gradient(90deg, #ff4258, #c8102e);
+  box-shadow: 0 0 14px rgba(255, 66, 88, 0.8);
+  transition: width 0.1s linear;
+}
+.splash-status { margin-top: 8px; font-size: 13px; color: #fff; text-shadow: 0 2px 6px #000; }
+.splash-status span { color: #ff8090; margin-left: 6px; font-variant-numeric: tabular-nums; }
+.splash-tip { margin-top: 6px; font-size: 12px; color: #aab1c4; text-shadow: 0 2px 6px #000; }
+
+@media (max-width: 760px) {
+  .splash-player { height: 64vh; }
+  .splash-cover-tag { bottom: 21vh; }
+  .splash-cover-tag .team { display: none; }
+}
+
+@keyframes splash-pan { from { transform: scale(1.05) translateX(-1%); } to { transform: scale(1.1) translateX(1%); } }
+@keyframes splash-twinkle { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+@keyframes splash-sweep { 0%, 100% { transform: translateX(-6%); opacity: 0.7; } 50% { transform: translateX(6%); opacity: 1; } }
+@keyframes splash-title-in { from { opacity: 0; transform: translateX(-50%) translateY(-30px) scale(1.2); } to { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); } }
+@keyframes splash-player-in { from { opacity: 0; transform: translateX(-50%) translateY(40px); } to { opacity: 1; transform: translateX(-50%) translateY(0); } }
+@keyframes splash-fade-up { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; } }
+.splash-bottom { animation-name: splash-fade-up-center; }
+@keyframes splash-fade-up-center { from { opacity: 0; transform: translate(-50%, 16px); } to { opacity: 1; transform: translate(-50%, 0); } }
+@keyframes splash-dribble { from { transform: translateY(0); } to { transform: translateY(150px); } }

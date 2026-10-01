@@ -5,3 +5,9 @@ build/
 .env
 *.xlsx
 *.xls
+
+# 로딩 화면 개인 이미지 (초상권/저작권 — 저장소에 올리지 않음)
+apps/web/public/splash/*.png
+apps/web/public/splash/*.jpg
+apps/web/public/splash/*.jpeg
+apps/web/public/splash/*.webp

@@ -18,7 +18,7 @@ import {
   offseasonOverview, offerNegotiation, freeAgentList, makeFaOffer, withdrawFaOffer, releasePlayer,
   advanceOffseason, startNewSeason,
 } from "./offseason";
-import { seedDatabase } from "./seed";
+import { seedDatabase, availableTeams } from "./seed";
 import { ATTR_LABEL, SIM_ATTR_KEYS, computeRatings } from "./ratings";
 
 const app = express();
@@ -168,10 +168,13 @@ async function teamRoster(teamId: number) {
 // ============================================================
 
 app.post("/api/new-game", route(async (req) => {
-  const teamId = Number(req.body.teamId);
-  const out = await seedDatabase(pool, teamId);
+  const team = req.body.teamName ? String(req.body.teamName) : Number(req.body.teamId) || undefined;
+  const out = await seedDatabase(pool, team);
   return { ok: true, ...out };
 }));
+
+/** 새 게임 팀 선택용 목록 (DB 상태와 무관하게 항상 10개 팀) */
+app.get("/api/new-game/teams", route(async () => availableTeams()));
 
 app.get("/api/franchise", route(async () => {
   const f = await getFranchise(pool);

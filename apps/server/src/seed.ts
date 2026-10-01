@@ -64,7 +64,17 @@ function readContracts() {
   return map;
 }
 
-export async function seedDatabase(pool: Pool, userTeamId?: number, log: (m: string) => void = () => {}): Promise<{ userTeamId: number }> {
+/** 새 게임에서 고를 수 있는 팀 목록 — DB가 비어 있어도(최초 설치 직후) 데이터 파일에서 바로 읽는다 */
+export function availableTeams(): { name: string; coach: string; style: string; description: string }[] {
+  const { teamNames } = loadLeagueData();
+  return teamNames.map((name) => {
+    const c = COACHES.find((x) => x.teamName === name);
+    return { name, coach: c?.name ?? "-", style: c?.style ?? "", description: c?.description ?? "" };
+  });
+}
+
+/** @param userTeam 운영할 팀 (팀 이름 권장, 기존 호환용으로 DB id도 허용) */
+export async function seedDatabase(pool: Pool, userTeam?: number | string, log: (m: string) => void = () => {}): Promise<{ userTeamId: number }> {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -221,7 +231,9 @@ export async function seedDatabase(pool: Pool, userTeamId?: number, log: (m: str
     const schedule = generateKblCalendarSchedule(teamNames, { startDate: SEASON_START, endDate: SEASON_END, openingGames: OPENING_GAMES, breaks: BREAKS });
     await insertSchedule(client, seasonId, schedule, SEASON_START, teamIdByName);
 
-    const chosen = userTeamId && [...teamIdByName.values()].includes(userTeamId) ? userTeamId : teamIdByName.get(teamNames[0])!;
+    const chosen = typeof userTeam === "string" && teamIdByName.has(userTeam) ? teamIdByName.get(userTeam)!
+      : typeof userTeam === "number" && [...teamIdByName.values()].includes(userTeam) ? userTeam
+      : teamIdByName.get(teamNames[0])!;
     await client.query(
       `INSERT INTO franchise (season_id, user_team_id, current_round, phase, game_date) VALUES ($1,$2,0,'regular',$3)`,
       [seasonId, chosen, GAME_START_DATE]

@@ -13,6 +13,7 @@ import { LeagueView } from "./components/League";
 import { PlayerView, PlayerSearch } from "./components/Player";
 import { OffseasonView } from "./components/Offseason";
 import { SalaryCapView, NewGameView } from "./components/Misc";
+import { Splash } from "./components/Splash";
 
 const NAV: { view: View["name"]; label: string }[] = [
   { view: "dashboard", label: "🏠 메인" },
@@ -31,6 +32,7 @@ function App() {
   const [franchise, setFranchise] = useState<Franchise | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [version, setVersion] = useState(0);
+  const [showSplash, setShowSplash] = useState(true);
 
   const refresh = useCallback(() => {
     api<Franchise>("/api/franchise")
@@ -40,6 +42,8 @@ function App() {
   }, []);
   useEffect(refresh, [refresh]);
 
+  const finishSplash = useCallback(() => setShowSplash(false), []);
+
   const go = (v: View) => {
     setView(v);
     window.scrollTo(0, 0);
@@ -47,14 +51,8 @@ function App() {
 
   let body;
   if (loadError && !franchise) {
-    body = view.name === "newgame" ? <NewGameView /> : (
-      <div className="card">
-        <h3>세이브 데이터를 불러올 수 없습니다</h3>
-        <p className="muted">{loadError}</p>
-        <p>API 서버(<code>apps/server</code>: <code>npm start</code>)가 실행 중인지 확인하고, 새 게임을 시작하세요.</p>
-        <button className="primary" onClick={() => go({ name: "newgame" })}>새 게임</button>
-      </div>
-    );
+    // 세이브가 없으면(첫 실행) 로딩 화면 다음에 바로 팀 선택
+    body = <NewGameView />;
   } else {
     switch (view.name) {
       case "dashboard": body = <DashboardView />; break;
@@ -73,11 +71,13 @@ function App() {
     }
   }
 
+  if (showSplash) return <Splash onDone={finishSplash} />;
+
   return (
     <AppContext.Provider value={{ go, refresh, version, userTeamId: franchise?.userTeamId ?? null }}>
       <div className="layout">
         <nav className="sidebar">
-          <div className="logo">KBL Manager</div>
+          <div className="logo">KM27</div>
           {NAV.map((n) => (
             <button key={n.view} className={`nav-item ${view.name === n.view ? "active" : ""}`} onClick={() => go({ name: n.view } as View)}>
               {n.label}
