@@ -22,7 +22,8 @@
  *   가중치  기록 / 역할·생산성 / 연봉 = 30% / 30% / 40%  (31세 이상: 25% / 30% / 45%)
  *   ⚠️ 연봉이 보도로 확인되지 않은 추정치(source=estimated)인 선수는 연봉 비중을 1/3로 줄임
  *      (추정 연봉 자체가 기록·경력으로 만든 값이라 다시 크게 반영하면 이중 반영 — 벤치 베테랑 과대평가 원인)
- *   KBL 기록이 없는 외국선수·아시아쿼터: 해외리그 기록(리그 강도 환산)으로 역할·생산성을 대신 평가
+ *   해외리그 기록으로 평가하는 선수(KBL 첫 시즌 / 마지막 KBL 시즌이 3년 이상 지남): KBL 환산 기록을
+ *   KBL 선수와 똑같이 쓰되, 리그 환산의 불확실성 때문에 표본 신뢰도를 90%만 인정
  *
  * 국내선수·아시아쿼터: 순위 → 오버롤 58~90, 외국선수: 78~92 (외국선수끼리 비교)
  */
@@ -42,7 +43,7 @@ export interface CalibrationInput {
   reliability: number;              // 0~1
   salaryKrw: number | null;         // 국내선수 보수(만원)
   salaryReported: boolean;          // true = 2026-27 보도로 확인된 보수, false = 추정치
-  overseasLine?: { pts: number; reb: number; ast: number } | null; // KBL 기록 없는 선수의 해외리그 기록(리그 강도 환산)
+  overseas?: boolean;               // true = pooled가 해외리그 기록을 KBL 기준으로 환산한 값
   rookieContract: boolean;
 }
 
@@ -109,21 +110,16 @@ export function calibrateRatings(players: CalibrationInput[]): Map<string, Calib
     const mpgArr = withStats.map((p) => p.pooled!.Min);
     const effArr = withStats.map((p) => efficiencyPerGame(p.pooled!));
     const peakArr = members.map((p) => peakEfficiency(p.seasons)).filter((v): v is number => v !== null);
-    const praArr = withStats.map((p) => p.pooled!.PTS + p.pooled!.REB + p.pooled!.AST);
 
     for (const p of members) {
       const before = overall.get(p.name)!;
       const statPct = percentileOf(overallArr, before);
       let productionPct: number | null = null;
-      if (!p.pooled && p.overseasLine) {
-        // KBL 기록이 없는 선수: 해외리그 득점+리바운드+어시스트(리그 강도 환산)를 같은 그룹 KBL 선수와 비교
-        // 해외 기록은 불확실성이 있어 85%만 인정
-        const pra = p.overseasLine.pts + p.overseasLine.reb + p.overseasLine.ast;
-        productionPct = percentileOf(praArr, pra) * 0.85 + 10 * 0.15;
-      }
       if (p.pooled) {
         const raw = percentileOf(mpgArr, p.pooled.Min) * 0.4 + percentileOf(effArr, efficiencyPerGame(p.pooled)) * 0.6;
-        const recent = raw * p.reliability + 10 * (1 - p.reliability);
+        // 해외 환산 기록은 리그 간 환산 오차가 있어 신뢰도를 90%만 인정
+        const rel = p.overseas ? p.reliability * 0.9 : p.reliability;
+        const recent = raw * rel + 10 * (1 - rel);
         // 전성기 실적: 부상·군 복무로 최근 표본이 적거나 주춤한 검증된 주전을 인정 (최근 70% + 전성기 30%)
         const peak = peakEfficiency(p.seasons);
         productionPct = peak === null ? recent : Math.max(recent, recent * 0.7 + percentileOf(peakArr, peak) * 0.3);

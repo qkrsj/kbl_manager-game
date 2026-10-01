@@ -3,10 +3,11 @@
  *
  * 시즌이 거듭돼도 리그가 유지되도록 매 비시즌 신인과 외국선수 후보를 만든다.
  * 외국선수는 실제 영입 방식처럼 "해외리그 기록 + 리그 강도"로 능력치를 산정한다
- * (KBL 경험 없는 외국선수 평가 방식과 동일 — leagueData.ts loadForeignEstimates 참고).
+ * (리그 수준 표는 실제 외국선수 평가와 같은 foreignLeagueRecords.ts의 LEAGUES).
  */
 import { Pool, PoolClient } from "pg";
 import { computeRatings, AttributeRow } from "./ratings";
+import { LEAGUES, LeagueKey } from "./foreignLeagueRecords";
 
 type Db = Pool | PoolClient;
 
@@ -18,16 +19,9 @@ const LAST_EN = ["존슨", "윌리엄스", "브라운", "데이비스", "해리�
 const FIRST_PH = ["후안", "마크", "제이슨", "칼로", "레이", "조쉬", "앤젤로", "크리스찬", "노엘", "케빈"];
 const LAST_PH = ["산토스", "레예스", "가르시아", "크루즈", "바티스타", "멘도사", "파딜라", "토레스", "아키노", "비야누에바"];
 
-const OVERSEAS_LEAGUES = [
-  { name: "NBA G리그", strength: 0.85 },
-  { name: "일본 B1리그", strength: 0.9 },
-  { name: "중국 CBA", strength: 1.05 },
-  { name: "호주 NBL", strength: 0.95 },
-  { name: "스페인 ACB", strength: 1.1 },
-  { name: "터키 BSL", strength: 1.05 },
-  { name: "이스라엘 리그", strength: 0.9 },
-  { name: "푸에르토리코 BSN", strength: 0.8 },
-];
+// 리그 수준은 실제 외국선수 평가와 같은 표(KBL = 1.00)를 쓴다. 표가 KBL보다 강한 리그 쪽으로 넓어서 1.1로 나눠 범위를 맞춤
+const OVERSEAS_LEAGUES = (["GLEAGUE", "B1", "CBA", "NBL_AUS", "ACB", "BSL", "ISRAEL", "BSN"] as LeagueKey[])
+  .map((k) => ({ name: LEAGUES[k].label, strength: LEAGUES[k].factor / 1.1 }));
 
 function rand(min: number, max: number) {
   return min + Math.random() * (max - min);

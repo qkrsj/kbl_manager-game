@@ -19,104 +19,8 @@ function parseCsv(content: string): { header: string[]; rows: string[][] } {
   return { header, rows };
 }
 
-import { FOREIGN_LEAGUE_RECORDS, ForeignLeagueRecord } from "./foreignLeagueRecords";
 import { FOREIGN_OPTION_MINUTES } from "./foreignImportMinutes";
-
-/** 0~100 퍼센타일을 게임 스케일(50~99)로 변환 — attribute-pipeline과 동일 공식 */
-function toAttributeScale(percentile0to100: number): number {
-  const clamped = Math.max(0, Math.min(100, percentile0to100));
-  return Math.round(50 + (clamped / 100) * 49);
-}
-
-function percentileOf(values: number[], target: number): number {
-  const clean = values.filter((v) => Number.isFinite(v));
-  if (clean.length === 0) return 50;
-  const below = clean.filter((v) => v < target).length;
-  const equal = clean.filter((v) => v === target).length;
-  return ((below + equal * 0.5) / clean.length) * 100;
-}
-
-export interface ForeignEstimate {
-  name: string;
-  attrs: DisplayAttrs;
-  internals: SimulationInternals;
-  speedTier: number; // DisplayAttrs엔 speed가 없어(엔진 미사용, 표시전용) 별도 보관
-}
-
-/**
- * KBL 실측기록이 없는 외국인선수를 실제 해외리그 기록(foreignLeagueRecords.ts) 기반으로 평가.
- * v0.2: 정성평가(상/중상/중) 방식 폐기 — 리그강도 배수로 KBL 환산 후, 실제 174명 KBL 선수의
- * PTS/REB/AST/BLK/STL/FG%/3P%/FT% 실측 분포와 직접 percentile 비교해서 산출.
- * (라운드파이프라인의 다른 선수들과 완전히 동일한 척도로 평가됨)
- */
-export function loadForeignEstimates(
-  kblStats: { PTS: number; REB: number; AST: number; BLK: number; STL: number; FGPct: number; ThreePct: number; FTPct: number }[]
-): Map<string, ForeignEstimate> {
-  const ptsArr = kblStats.map((s) => s.PTS);
-  const rebArr = kblStats.map((s) => s.REB);
-  const astArr = kblStats.map((s) => s.AST);
-  const blkArr = kblStats.map((s) => s.BLK);
-  const stlArr = kblStats.map((s) => s.STL);
-  const fgArr = kblStats.map((s) => s.FGPct);
-  const threeArr = kblStats.map((s) => s.ThreePct);
-  const ftArr = kblStats.map((s) => s.FTPct);
-
-  const leagueAvgFg = fgArr.reduce((a, b) => a + b, 0) / fgArr.length;
-  const leagueAvgThree = threeArr.reduce((a, b) => a + b, 0) / threeArr.length;
-  const leagueAvgFt = ftArr.reduce((a, b) => a + b, 0) / ftArr.length;
-
-  const result = new Map<string, ForeignEstimate>();
-
-  for (const r of FOREIGN_LEAGUE_RECORDS) {
-    // 리그강도 배수로 KBL 환산 (볼륨스탯만 — 정확도%는 리그강도 영향 상대적으로 적어 원값 유지)
-    const adjPpg = r.ppg * r.leagueStrength;
-    const adjRpg = r.rpg * r.leagueStrength;
-    const adjApg = r.apg * r.leagueStrength;
-    const adjBpg = (r.bpg ?? 0.1) * r.leagueStrength; // 데이터 없으면 KBL 중앙값(0.1)로 중립 처리
-    const adjSpg = (r.spg ?? 0.4) * r.leagueStrength; // 데이터 없으면 KBL 중앙값(0.4)로 중립 처리
-
-    const ptsPct = percentileOf(ptsArr, adjPpg);
-    const rebPct = percentileOf(rebArr, adjRpg);
-    const astPct = percentileOf(astArr, adjApg);
-    const blkPct = percentileOf(blkArr, adjBpg);
-    const stlPct = percentileOf(stlArr, adjSpg);
-    const fgPct = r.fgPct !== null ? percentileOf(fgArr, r.fgPct) : 50;
-    const threePct = r.threePct !== null ? percentileOf(threeArr, r.threePct) : 50;
-    const ftPctPercentile = r.ftPct !== null ? percentileOf(ftArr, r.ftPct) : 50;
-
-    const finishing = toAttributeScale(ptsPct); // finishing = 볼륨 단독(기존 파이프라인과 동일 철학)
-    const dunking = toAttributeScale((rebPct + fgPct) / 2); // 직접 데이터 없어 리바운드+FG% 로 운동능력 근사
-    const midRangeShooting = toAttributeScale(fgPct * 0.7 + 50 * 0.3);
-    const threePointShooting = toAttributeScale(threePct);
-    const freeThrowShooting = toAttributeScale(ftPctPercentile);
-    const ballHandling = toAttributeScale(astPct);
-    const passing = toAttributeScale(astPct);
-    const steal = toAttributeScale(stlPct);
-    const shotBlocking = toAttributeScale(blkPct);
-    const defensiveRebounding = toAttributeScale(rebPct);
-    const offensiveRebounding = toAttributeScale(rebPct);
-    const strength = toAttributeScale(rebPct);
-    const stamina = toAttributeScale(50 + (r.gamesSample >= 30 ? 15 : 0)); // 표본 많으면 체력검증됐다고 가점
-
-    const attrs: DisplayAttrs = {
-      finishing, dunking, midRangeShooting, threePointShooting, freeThrowShooting,
-      ballHandling, passing, steal, shotBlocking, defensiveRebounding, offensiveRebounding,
-      strength, stamina,
-    };
-
-    const internals: SimulationInternals = {
-      paintAccuracy: r.fgPct ?? leagueAvgFg,
-      midAccuracy: r.fgPct ?? leagueAvgFg,
-      threeAccuracy: r.threePct ?? leagueAvgThree,
-      ftAccuracy: r.ftPct ?? leagueAvgFt,
-      usagePercentile: ptsPct,
-      ptsPercentile: ptsPct,
-    };
-
-    result.set(r.name, { name: r.name, attrs, internals, speedTier: 50 });
-  }
-  return result;
-}
+import { buildOverseasEvaluations, OverseasEvaluation } from "./overseasEvaluation";
 
 export interface LeagueData {
   raw: (PlayerInput & { nationality: string; birthDate?: string })[];
@@ -126,6 +30,8 @@ export interface LeagueData {
   nameIdx: number;
   posIdx: number;
   teamNames: string[];
+  /** 해외리그 기록으로 평가한 선수 (KBL 첫 시즌 / 마지막 KBL 시즌이 3년 이상 지난 선수) */
+  overseas: Map<string, OverseasEvaluation>;
   buildTeamRoster: (teamName: string) => SimPlayer[];
 }
 
@@ -139,6 +45,26 @@ export function loadLeagueData(): LeagueData {
   const nameIdx = rosterCsv.header.indexOf("name");
   const posIdx = rosterCsv.header.indexOf("position");
   const natIdx = rosterCsv.header.indexOf("nationality");
+  const hIdx = rosterCsv.header.indexOf("height_cm");
+  const wIdx = rosterCsv.header.indexOf("weight_kg");
+
+  // 해외리그 기록 → KBL 환산 시즌 1줄로 바꿔서 KBL 선수와 같은 파이프라인에 넣는다.
+  // (KBL 기록이 없는 선수는 새로 추가, 마지막 KBL 시즌이 3년 이상 지난 선수는 KBL 기록 대신 사용)
+  const rosterInfo = new Map(rosterCsv.rows.map((c) => [c[nameIdx], { position: c[posIdx], nationality: c[natIdx] }]));
+  const overseas = buildOverseasEvaluations(raw, rosterInfo);
+  for (const [name, ev] of overseas) {
+    const existing = raw.find((p) => p.name === name);
+    if (existing) {
+      existing.seasons = [ev.line];
+    } else {
+      const cols = rosterCsv.rows.find((c) => c[nameIdx] === name)!;
+      raw.push({
+        playerId: name, name, ageAtSeasonStart: 27, draftInfo: { kind: "foreign_or_naturalized" },
+        nationality: cols[natIdx], seasons: [ev.line],
+        heightCm: Number(cols[hIdx]) || null, weightKg: Number(cols[wIdx]) || null,
+      });
+    }
+  }
 
   const derivedMap = computeLeagueDerivedAttributes(raw);
   const teamNames = Array.from(new Set(rosterCsv.rows.map((cols) => cols[teamIdx])));
@@ -156,16 +82,6 @@ export function loadLeagueData(): LeagueData {
       };
     });
   const internalsMap = computeSimulationInternals(internalsInput);
-  const kblStatsForForeignComparison = raw
-    .filter((p) => p.seasons.length > 0)
-    .map((p) => {
-      const s = poolRecentSeasons(p.seasons)!;
-      return {
-        PTS: s.PTS, REB: s.REB, AST: s.AST, BLK: s.BLK, STL: s.STL,
-        FGPct: s["FG%"] / 100, ThreePct: s["3P%"] / 100, FTPct: s["FT%"] / 100,
-      };
-    });
-  const foreignEstimates = loadForeignEstimates(kblStatsForForeignComparison);
 
   function buildTeamRoster(teamName: string): SimPlayer[] {
     const players: RosterPlayer[] = [];
@@ -188,7 +104,6 @@ export function loadLeagueData(): LeagueData {
       const player = raw.find((p) => p.name === lp.name);
       const derived = player ? derivedMap.get(player.playerId) : undefined;
       const internals = player ? internalsMap.get(player.playerId) : undefined;
-      const estimate = foreignEstimates.get(lp.name);
 
       const attrs: DisplayAttrs = derived
         ? {
@@ -198,8 +113,6 @@ export function loadLeagueData(): LeagueData {
             shotBlocking: derived.shotBlocking, defensiveRebounding: derived.defensiveRebounding,
             offensiveRebounding: derived.offensiveRebounding, strength: derived.strength, stamina: derived.stamina,
           }
-        : estimate
-        ? estimate.attrs
         : {
             finishing: 50, dunking: 50, midRangeShooting: 50, threePointShooting: 50, freeThrowShooting: 50,
             ballHandling: 50, passing: 50, steal: 50, shotBlocking: 50, defensiveRebounding: 50,
@@ -208,10 +121,10 @@ export function loadLeagueData(): LeagueData {
       return {
         ...lp,
         attrs,
-        internals: internals ?? estimate?.internals ?? { paintAccuracy: 0.5, midAccuracy: 0.42, threeAccuracy: 0.33, ftAccuracy: 0.7, usagePercentile: 50, ptsPercentile: 50 },
+        internals: internals ?? { paintAccuracy: 0.5, midAccuracy: 0.42, threeAccuracy: 0.33, ftAccuracy: 0.7, usagePercentile: 50, ptsPercentile: 50 },
       };
     });
   }
 
-  return { raw, derivedMap, rosterCsv, teamIdx, nameIdx, posIdx, teamNames, buildTeamRoster };
+  return { raw, derivedMap, rosterCsv, teamIdx, nameIdx, posIdx, teamNames, overseas, buildTeamRoster };
 }

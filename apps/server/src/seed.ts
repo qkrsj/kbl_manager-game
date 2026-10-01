@@ -3,7 +3,8 @@
  *
  * 2026-27 시즌 시작 시점의 리그를 만든다.
  *  - 팀/선수/능력치: players_enriched.json(실측 기록) + roster.csv(2026-27 로스터)
- *    · KBL 경험 없는 외국선수는 해외리그 기록 × 리그 강도로 환산해 평가 (leagueData.loadForeignEstimates)
+ *    · KBL 기록이 없거나 마지막 KBL 시즌이 3년 이상 지난 외국선수·아시아쿼터는
+ *      해외리그 기록을 KBL 기준으로 환산해 같은 방식으로 평가 (overseasEvaluation.ts)
  *  - 시뮬레이션 프로필(실제 슛 확률 등): player_sim_profile
  *  - 계약(2026-27 보수, FA 년도): data/processed/contracts_2026_27.csv
  *  - AI 감독: coaches.ts
@@ -14,8 +15,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { Pool } from "pg";
-import { loadLeagueData, loadForeignEstimates } from "./leagueData";
-import { FOREIGN_LEAGUE_RECORDS } from "./foreignLeagueRecords";
+import { loadLeagueData } from "./leagueData";
 import { poolRecentSeasons, sampleReliability } from "../../../packages/attribute-pipeline/attributeConversion";
 import { calibrateRatings, CalibrationGroup, shiftToOverall } from "./ratingCalibration";
 import { generateKblCalendarSchedule } from "../../../packages/simulation-engine/seasonScheduler";
@@ -25,6 +25,13 @@ import { simProfileFromAttrs } from "./generatedPlayers";
 import { insertSchedule } from "./offseason";
 
 const SEASON_YEAR = 2026;
+/** 2026-27 개막일 기준 만 나이 — 해외 기록으로 평가하는 선수용 (기록상 나이는 마지막 KBL 시즌 기준이라 몇 년 전 나이임) */
+function ageAtSeasonStart(p: { birthDate?: string; ageAtSeasonStart: number } | undefined): number {
+  if (!p) return 27;
+  if (!p.birthDate) return p.ageAtSeasonStart ?? 27;
+  const b = new Date(p.birthDate), s = new Date("2026-10-03");
+  return s.getFullYear() - b.getFullYear() - (s < new Date(s.getFullYear(), b.getMonth(), b.getDate()) ? 1 : 0);
+}
 const SEASON_LABEL = "2026-2027";
 const SEASON_START = "2026-10-03";
 const SEASON_END = "2027-04-11";
@@ -103,7 +110,7 @@ export async function seedDatabase(pool: Pool, userTeam?: number | string, log: 
                playoff_series, franchise, player_attributes, players, seasons, teams RESTART IDENTITY CASCADE`);
 
     log("[seed] players_enriched.json / roster.csv 로딩...");
-    const { raw, derivedMap, teamNames, rosterCsv, teamIdx, nameIdx, posIdx, buildTeamRoster } = loadLeagueData();
+    const { raw, derivedMap, teamNames, rosterCsv, teamIdx, nameIdx, posIdx, overseas, buildTeamRoster } = loadLeagueData();
     const contracts = readContracts();
 
     const teamIdByName = new Map<string, number>();
@@ -135,24 +142,15 @@ export async function seedDatabase(pool: Pool, userTeam?: number | string, log: 
     rosterCsv.rows.forEach((cols) => {
       rosterMeta.set(cols[nameIdx], { team: cols[teamIdx], position: cols[posIdx], nationality: cols[natIdx] });
     });
-    const kblStatsForForeignComparison = raw
-      .filter((p) => p.seasons.length > 0)
-      .map((p) => {
-        const s = poolRecentSeasons(p.seasons)!;
-        return { PTS: s.PTS, REB: s.REB, AST: s.AST, BLK: s.BLK, STL: s.STL, FGPct: s["FG%"] / 100, ThreePct: s["3P%"] / 100, FTPct: s["FT%"] / 100 };
-      });
-    const foreignEstimates = loadForeignEstimates(kblStatsForForeignComparison);
-
     // 1단계: 전원 능력치 계산 (DB 삽입 전) → 2단계: 역할·생산성·연봉으로 수준 보정 → 3단계: 삽입
     interface Draft {
       name: string; meta: { team: string; position: string; nationality: string }; p: (typeof raw)[number] | undefined;
-      estimate: ReturnType<typeof foreignEstimates.get>; positionGroup: string; isForeign: boolean;
+      positionGroup: string; isForeign: boolean;
       contract: ReturnType<typeof contracts.get>; attrs: AttributeRow; potential: number | null; injury: number;
     }
     const drafts: Draft[] = [];
     for (const [name, meta] of rosterMeta.entries()) {
       const p = raw.find((r) => r.name === name);
-      const estimate = foreignEstimates.get(name);
       const positionGroup = meta.position?.includes("센터") ? "C" : meta.position?.includes("가드") ? "G" : "F";
       const contract = contracts.get(name);
       const isForeign = FOREIGN_OVERRIDE_NAMES.has(name) || (meta.nationality !== "KOR" && meta.nationality !== "PHI");
@@ -170,15 +168,6 @@ export async function seedDatabase(pool: Pool, userTeam?: number | string, log: 
         };
         potential = d.potential;
         injury = d.injuryProneness;
-      } else if (estimate) {
-        const a = estimate.attrs;
-        attrs = {
-          finishing: a.finishing, dunking: a.dunking, mid_range_shooting: a.midRangeShooting, three_point_shooting: a.threePointShooting,
-          free_throw_shooting: a.freeThrowShooting, ball_handling: a.ballHandling, passing: a.passing, steal: a.steal,
-          shot_blocking: a.shotBlocking, defensive_rebounding: a.defensiveRebounding, offensive_rebounding: a.offensiveRebounding,
-          stamina: a.stamina, strength: a.strength, speed: estimate.speedTier,
-        };
-        potential = null;
       } else {
         // 기록이 거의 없는 국내 벤치 선수 — 스케일 최하단(50) (기존 정책 유지)
         attrs = {
@@ -187,29 +176,25 @@ export async function seedDatabase(pool: Pool, userTeam?: number | string, log: 
         };
         potential = 50;
       }
-      drafts.push({ name, meta, p, estimate, positionGroup, isForeign, contract, attrs, potential, injury });
+      drafts.push({ name, meta, p, positionGroup, isForeign, contract, attrs, potential, injury });
     }
 
-    const overseasLine = (name: string) => {
-      const r = FOREIGN_LEAGUE_RECORDS.find((x) => x.name === name);
-      return r ? { pts: r.ppg * r.leagueStrength, reb: r.rpg * r.leagueStrength, ast: r.apg * r.leagueStrength } : null;
-    };
     const calibration = calibrateRatings(drafts.map((dr) => {
       const pooled = dr.p ? poolRecentSeasons(dr.p.seasons) : null;
       const type = dr.contract?.type ?? (dr.isForeign ? "foreign" : dr.meta.nationality === "PHI" ? "asia" : "domestic");
       return {
         name: dr.name, group: type as CalibrationGroup, positionGroup: dr.positionGroup,
-        age: dr.p?.ageAtSeasonStart ?? 27, attrs: dr.attrs, pooled, seasons: dr.p?.seasons ?? [], reliability: sampleReliability(pooled),
+        age: overseas.has(dr.name) ? ageAtSeasonStart(dr.p) : dr.p?.ageAtSeasonStart ?? 27, attrs: dr.attrs, pooled, seasons: dr.p?.seasons ?? [], reliability: sampleReliability(pooled),
         salaryKrw: type === "domestic" ? dr.contract?.krw ?? null : null,
         salaryReported: dr.contract?.source === "reported",
-        overseasLine: overseasLine(dr.name),
+        overseas: overseas.has(dr.name),
         rookieContract: (dr.p as any)?.draftYear === 2025,
       };
     }));
 
     const overrides = readOverrides();
     for (const dr of drafts) {
-      const { name, meta, p, estimate, positionGroup, isForeign, contract, potential, injury } = dr;
+      const { name, meta, p, positionGroup, isForeign, contract, potential, injury } = dr;
       const calibrated = calibration.get(name)?.attrs ?? dr.attrs;
       const override = overrides.get(name);
       const attrs = override !== undefined ? shiftToOverall(calibrated, positionGroup, override) : calibrated;
@@ -240,7 +225,7 @@ export async function seedDatabase(pool: Pool, userTeam?: number | string, log: 
 
       const sim = simByName.get(name);
       const offense = computeRatings(attrs, positionGroup).offense;
-      if (sim && (sim.hasRecord || estimate)) {
+      if (sim && sim.hasRecord) {
         const i = sim.internals;
         await client.query(
           `INSERT INTO player_sim_profile (player_id, paint_accuracy, mid_accuracy, three_accuracy, ft_accuracy, usage_percentile, pts_percentile, base_attrs)
