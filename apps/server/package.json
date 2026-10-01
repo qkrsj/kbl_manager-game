@@ -4,7 +4,11 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "seed": "tsx src/seed.ts",
+    "typecheck": "tsc --noEmit -p .",
+    "simulate": "tsx scripts/simulateSeason.ts"
   },
   "keywords": [],
   "author": "",
@@ -20,6 +24,7 @@
     "@types/node": "^26.4.1",
     "@types/pg": "^8.23.1",
     "ts-node": "^10.9.2",
+    "tsx": "^4.23.15",
     "typescript": "^7.0.2"
   }
 }

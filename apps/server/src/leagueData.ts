@@ -1,14 +1,14 @@
 /**
  * KBL Manager — 팀 로스터(SimPlayer[]) 빌드 공용 로직
  * players_enriched.json + roster.csv로부터 시뮬레이션 엔진이 쓸 SimPlayer[]를 구성한다.
- * seed.ts, advanceRound.ts 양쪽에서 동일 로직을 재사용하기 위해 분리.
+ * v1부터는 seed.ts(새 게임 생성) 시점에만 사용되고, 이후 시뮬레이션은 DB(rosterBuilder.ts)를 기준으로 한다.
  */
 import * as fs from "fs";
 import * as path from "path";
 import { computeLeagueDerivedAttributes, PlayerInput, DerivedAttributes } from "../../../packages/attribute-pipeline/attributeConversion";
 import { toLineupPlayer, RosterPlayer } from "../../../packages/simulation-engine/lineup";
 import { computeSimulationInternals, SimStatLine } from "../../../packages/simulation-engine/simulationInternals";
-import { SimPlayer, DisplayAttrs, SimulationInternals, TacticsOverride } from "../../../packages/simulation-engine/possession";
+import { SimPlayer, DisplayAttrs, SimulationInternals } from "../../../packages/simulation-engine/possession";
 
 const DATA_DIR = path.join(__dirname, "../../../data/processed");
 
@@ -214,114 +214,4 @@ export function loadLeagueData(): LeagueData {
   }
 
   return { raw, derivedMap, rosterCsv, teamIdx, nameIdx, posIdx, teamNames, buildTeamRoster };
-}
-
-// ============================================================
-// 유저 팀 전용 로스터/전술 오버라이드
-// ⚠️ 이 함수는 franchise.user_team_id에 해당하는 팀에만 호출한다.
-//    나머지 9팀은 buildTeamRoster()만 그대로 써서 기존 엔진 동작을 그대로 유지한다.
-// ============================================================
-
-export interface PlayerRosterSetting {
-  name: string;
-  role: "starter" | "bench" | "inactive";
-  minutesTarget: number | null;
-  offensePriority: 1 | 2 | 3 | null;
-}
-
-export interface TeamTacticsSetting {
-  paceStyle: "fast" | "normal" | "slow";
-  threePointReliance: "high" | "normal" | "low";
-  defensiveStopperName: string | null;
-  clutchCloserName: string | null;
-}
-
-const OFFENSE_PRIORITY_PERCENTILE: Record<1 | 2 | 3, number> = { 1: 97, 2: 88, 3: 78 };
-const PACE_EXPONENT: Record<TeamTacticsSetting["paceStyle"], number | undefined> = {
-  fast: 6, normal: undefined, slow: 12,
-};
-const THREE_RELIANCE_MULTIPLIER: Record<TeamTacticsSetting["threePointReliance"], number> = {
-  high: 1.4, normal: 1.0, low: 0.7,
-};
-
-/**
- * 유저 팀 로스터에 로스터설정(선발/후보/출전시간/공격순위) + 팀전술을 반영.
- * role='inactive'인 선수는 그 시즌 엔트리에서 아예 제외(엔진이 절대 선택 안 함).
- */
-export function applyUserOverrides(
-  roster: SimPlayer[],
-  playerSettings: PlayerRosterSetting[],
-  tactics: TeamTacticsSetting
-): SimPlayer[] {
-  const settingsByName = new Map(playerSettings.map((s) => [s.name, s]));
-  const paceExponent = PACE_EXPONENT[tactics.paceStyle];
-  const threeMultiplier = THREE_RELIANCE_MULTIPLIER[tactics.threePointReliance];
-
-  return roster
-    .filter((p) => settingsByName.get(p.name)?.role !== "inactive")
-    .map((p) => {
-      const setting = settingsByName.get(p.name);
-
-      const perGameMin = setting?.minutesTarget ?? p.perGameMin;
-
-      const usagePercentile = setting?.offensePriority
-        ? OFFENSE_PRIORITY_PERCENTILE[setting.offensePriority]
-        : p.internals.usagePercentile;
-      const ptsPercentile = setting?.offensePriority
-        ? OFFENSE_PRIORITY_PERCENTILE[setting.offensePriority]
-        : p.internals.ptsPercentile;
-
-      const tacticsOverride: TacticsOverride = {
-        shotProbExponent: paceExponent,
-        threeWeightMultiplier: threeMultiplier,
-        isDefensiveStopper: tactics.defensiveStopperName === p.name,
-        isClutchCloser: tactics.clutchCloserName === p.name,
-      };
-
-      return {
-        ...p,
-        perGameMin,
-        internals: { ...p.internals, usagePercentile, ptsPercentile },
-        tactics: tacticsOverride,
-      };
-    });
-}
-
-/**
- * 팀 로스터 전체(용병 포함, 유저팀/AI팀 무관)에 누적 성장 delta를 적용.
- * DisplayAttrs(0~99 스케일, 엔진 계산에 쓰이는 능력치)에만 적용하고,
- * SimulationInternals(실제 슛확률 등 실측기반 값)는 건드리지 않음 —
- * "얼마나 잘하는 선수인가"라는 등급 자체를 조정하는 개념이라 실제 확률까지
- * 재추정하는 건 v0 범위를 넘어선다고 판단.
- */
-export function applyGrowthDeltas(
-  roster: SimPlayer[],
-  deltas: Map<string, { finishing: number; dunking: number; midRangeShooting: number; threePointShooting: number;
-    freeThrowShooting: number; ballHandling: number; passing: number; steal: number; shotBlocking: number;
-    defensiveRebounding: number; offensiveRebounding: number; strength: number; stamina: number }>
-): SimPlayer[] {
-  const clamp = (v: number) => Math.max(50, Math.min(99, v));
-  return roster.map((p) => {
-    const d = deltas.get(p.name);
-    if (!d) return p;
-    return {
-      ...p,
-      attrs: {
-        ...p.attrs,
-        finishing: clamp(p.attrs.finishing + d.finishing),
-        dunking: clamp(p.attrs.dunking + d.dunking),
-        midRangeShooting: clamp(p.attrs.midRangeShooting + d.midRangeShooting),
-        threePointShooting: clamp(p.attrs.threePointShooting + d.threePointShooting),
-        freeThrowShooting: clamp(p.attrs.freeThrowShooting + d.freeThrowShooting),
-        ballHandling: clamp(p.attrs.ballHandling + d.ballHandling),
-        passing: clamp(p.attrs.passing + d.passing),
-        steal: clamp(p.attrs.steal + d.steal),
-        shotBlocking: clamp(p.attrs.shotBlocking + d.shotBlocking),
-        defensiveRebounding: clamp(p.attrs.defensiveRebounding + d.defensiveRebounding),
-        offensiveRebounding: clamp(p.attrs.offensiveRebounding + d.offensiveRebounding),
-        strength: clamp(p.attrs.strength + d.strength),
-        stamina: clamp(p.attrs.stamina + d.stamina),
-      },
-    };
-  });
 }
