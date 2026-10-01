@@ -175,6 +175,61 @@ function toAttributeScale(percentile0to100: number): number {
   return Math.round(50 + (clamped / 100) * 49);
 }
 
+
+// ============================================================
+// v1.0: 최근 3시즌 가중 합산 (단일 시즌 의존 제거)
+// ============================================================
+
+/**
+ * 최근 3개 유효시즌을 (최신 1.0 / 직전 0.6 / 그 전 0.35) × 출전경기수로 가중 합산한 "합성 시즌" 스탯.
+ * ⚠️ 이전엔 최신 1시즌만 썼기 때문에, 최신 시즌에 1경기만 뛴 선수(그 경기 수치가 그대로 평가됨)나
+ *    부상으로 시즌 일부만 뛴 에이스의 능력치가 크게 왜곡됐다 (예: 2025-26 1경기 출전 선수가 74,
+ *    37경기 출전 에이스가 80 — 사용자 지적으로 발견).
+ * 경기당 수치는 가중 경기수 기준 평균, G는 가중 경기수 합(= 표본 크기), %는 합산 성공/시도로 재계산.
+ */
+export const RECENT_SEASON_WEIGHTS = [1.0, 0.6, 0.35];
+
+export function poolRecentSeasons(seasons: SeasonStatLine[], weights: number[] = RECENT_SEASON_WEIGHTS): SeasonStatLine | null {
+  const recent = seasons.slice(-weights.length).reverse(); // 최신 → 과거
+  if (recent.length === 0) return null;
+  const perGameKeys: (keyof SeasonStatLine)[] = [
+    "W", "L", "Min", "PTS", "2PM", "2PA", "3PM", "3PA", "FGM", "FGA", "FTM", "FTA", "OREB", "DREB", "REB",
+    "AST", "STL", "BLK", "GD", "DK", "DKA", "TO", "PF", "PP", "PPA", "plusMinus", "DD2", "TD3",
+  ];
+  let gw = 0;
+  const sums: Record<string, number> = {};
+  recent.forEach((st, i) => {
+    const w = weights[i] * st.G;
+    gw += w;
+    perGameKeys.forEach((k) => { sums[k as string] = (sums[k as string] ?? 0) + (Number(st[k]) || 0) * w; });
+  });
+  if (gw === 0) return { ...recent[0] };
+  const avg = (k: string) => sums[k] / gw;
+  const pct = (m: string, a: string) => (sums[a] > 0 ? (sums[m] / sums[a]) * 100 : 0);
+  const out = { ...recent[0], season: recent[0].season, G: gw } as SeasonStatLine;
+  perGameKeys.forEach((k) => { (out as unknown as Record<string, number>)[k as string] = avg(k as string); });
+  out["2P%"] = pct("2PM", "2PA");
+  out["3P%"] = pct("3PM", "3PA");
+  out["FG%"] = pct("FGM", "FGA");
+  out["FT%"] = pct("FTM", "FTA");
+  out["PP%"] = pct("PP", "PPA");
+  return out;
+}
+
+/**
+ * 표본 신뢰도 (0~1): 가중 합산 출전시간(분)이 많을수록 1에 가까움.
+ * 400분(예: 경기당 20분 × 20경기) 정도면 0.67, 1500분 이상이면 0.88+.
+ */
+export const RELIABILITY_K_MINUTES = 200;
+export function sampleReliability(pooled: SeasonStatLine | null): number {
+  if (!pooled) return 0;
+  const minutes = pooled.Min * pooled.G;
+  return minutes / (minutes + RELIABILITY_K_MINUTES);
+}
+
+/** 표본이 적은 선수는 리그 평균이 아니라 "교체 선수 수준"(하위 15퍼센타일) 쪽으로 당긴다 */
+const REPLACEMENT_LEVEL_PERCENTILE = 15;
+
 // ============================================================
 // 3. 리그 전체 통계 캐시 (한 번 계산해서 재사용)
 // ============================================================
@@ -528,7 +583,7 @@ export function computeLeagueDerivedAttributes(
   const leagueCtx: LeagueContext = {
     players: players
       .filter((p) => p.seasons.length > 0)
-      .map((p) => ({ playerId: p.playerId, stat: p.seasons[p.seasons.length - 1] })),
+      .map((p) => ({ playerId: p.playerId, stat: poolRecentSeasons(p.seasons)! })),
   };
   const avg = computeLeagueAverages(leagueCtx);
 
@@ -542,9 +597,15 @@ export function computeLeagueDerivedAttributes(
   });
 
   // --- 최신 시즌 기준 raw metric을 리그 전체에 대해 미리 계산 ---
+  // v1.0: "최신 시즌" 대신 최근 3시즌 가중 합산 스탯을 사용 (변수명은 기존 코드 호환을 위해 유지)
   const latestStatByPlayer = new Map<string, SeasonStatLine>();
+  const reliabilityByPlayer = new Map<string, number>();
   players.forEach((p) => {
-    if (p.seasons.length > 0) latestStatByPlayer.set(p.playerId, p.seasons[p.seasons.length - 1]);
+    const pooled = poolRecentSeasons(p.seasons);
+    if (pooled) {
+      latestStatByPlayer.set(p.playerId, pooled);
+      reliabilityByPlayer.set(p.playerId, sampleReliability(pooled));
+    }
   });
 
   const finishingRaw = new Map<string, { perGamePPA: number }>();
@@ -655,30 +716,34 @@ export function computeLeagueDerivedAttributes(
       return; // 최신 시즌 데이터 없는 선수 (은퇴 등) 스킵
     }
 
+    // v1.0: 기술 능력치는 표본 신뢰도만큼만 퍼센타일을 인정하고 나머지는 교체선수 수준으로 수렴
+    const rel = reliabilityByPlayer.get(p.playerId) ?? 0;
+    const skillScale = (pct: number) => toAttributeScale(pct * rel + REPLACEMENT_LEVEL_PERCENTILE * (1 - rel));
+
     // finishing: 볼륨(경기당PPA) 단독 — 정확도 제거, dunking은 별도 속성
-    const finishing = toAttributeScale(percentile(perGamePPAArr, fin.perGamePPA));
+    const finishing = skillScale(percentile(perGamePPAArr, fin.perGamePPA));
 
     // dunking: 시즌환산 덩크 시도 횟수(DKA) 단독
-    const dunking = toAttributeScale(percentile(dunkingArr, dunk));
+    const dunking = skillScale(percentile(dunkingArr, dunk));
 
     // midRangeShooting: 정확도 0.7 + 볼륨 0.3
-    const midRangeShooting = toAttributeScale(
+    const midRangeShooting = skillScale(
       percentile(correctedMidArr, mid.correctedMid) * 0.7 +
       percentile(perGameMidAttArr, mid.perGameMidAtt) * 0.3
     );
 
-    const threePointShooting = toAttributeScale(
+    const threePointShooting = skillScale(
       percentile(corrected3PArr, three.corrected3P) * 0.7 +
       percentile(per3PAArr, three.per3PA) * 0.3
     );
 
     // freeThrowShooting: 정확도 0.85 + 볼륨 0.15
-    const freeThrowShooting = toAttributeScale(
+    const freeThrowShooting = skillScale(
       percentile(correctedFTArr, ft.correctedFT) * 0.85 +
       percentile(perGameFTAArr, ft.perGameFTA) * 0.15
     );
 
-    const ballHandling = toAttributeScale(
+    const ballHandling = skillScale(
       (100 - percentile(toRatioArr, bh.correctedToRatio)) * 0.4 +
       percentile(astPerUsageArr, bh.correctedAstPerUsage) * 0.6
     );
@@ -689,21 +754,21 @@ export function computeLeagueDerivedAttributes(
     // (지적으로 발견 — 거의 안 뛴 후보선수를 "평균"으로 처리하는 게 논리적으로 안 맞음)
     const LOW_SAMPLE_DEFAULT_PERCENTILE = 5;
 
-    const passing = toAttributeScale(pass === null ? LOW_SAMPLE_DEFAULT_PERCENTILE : percentile(passingArr, pass));
+    const passing = skillScale(pass === null ? LOW_SAMPLE_DEFAULT_PERCENTILE : percentile(passingArr, pass));
 
     // GD(굿디펜스) 보너스: steal에만 적용.
     // shotBlocking/defensiveRebounding은 빅맨 편향 속성인데 GD는 가드 편향 스탯이라
     // 함께 블렌딩하면 원래 잘하던 빅맨 점수가 오히려 깎이는 역효과가 있어 제외 (실측 검증 중 발견)
     const stealPct = stl === null ? LOW_SAMPLE_DEFAULT_PERCENTILE : percentile(stealArr, stl);
     const gdPct = gd === null ? LOW_SAMPLE_DEFAULT_PERCENTILE : percentile(gdArr, gd);
-    const steal = toAttributeScale(stealPct * 0.85 + gdPct * 0.15);
-    const shotBlocking = toAttributeScale(blk === null ? LOW_SAMPLE_DEFAULT_PERCENTILE : percentile(blockArr, blk));
-    const defensiveRebounding = toAttributeScale(dreb === null ? LOW_SAMPLE_DEFAULT_PERCENTILE : percentile(drebArr, dreb));
-    const offensiveRebounding = toAttributeScale(oreb === null ? LOW_SAMPLE_DEFAULT_PERCENTILE : percentile(orebArr, oreb));
+    const steal = skillScale(stealPct * 0.85 + gdPct * 0.15);
+    const shotBlocking = skillScale(blk === null ? LOW_SAMPLE_DEFAULT_PERCENTILE : percentile(blockArr, blk));
+    const defensiveRebounding = skillScale(dreb === null ? LOW_SAMPLE_DEFAULT_PERCENTILE : percentile(drebArr, dreb));
+    const offensiveRebounding = skillScale(oreb === null ? LOW_SAMPLE_DEFAULT_PERCENTILE : percentile(orebArr, oreb));
 
     // stamina: 경기당 출장시간(Min) 퍼센타일 단독 (거친 근사치)
     const staminaRawVal = staminaRaw.get(p.playerId)!;
-    const stamina = toAttributeScale(percentile(staminaArr, staminaRawVal));
+    const stamina = skillScale(percentile(staminaArr, staminaRawVal));
 
     // injuryProneness: 최근 3시즌 평균 출장률이 낮을수록 높음 (역순), 데이터 없으면 중립값 50
     const injuryRawVal = injuryRaw.get(p.playerId);

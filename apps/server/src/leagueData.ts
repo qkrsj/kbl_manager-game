@@ -5,7 +5,7 @@
  */
 import * as fs from "fs";
 import * as path from "path";
-import { computeLeagueDerivedAttributes, PlayerInput, DerivedAttributes } from "../../../packages/attribute-pipeline/attributeConversion";
+import { computeLeagueDerivedAttributes, PlayerInput, DerivedAttributes, poolRecentSeasons } from "../../../packages/attribute-pipeline/attributeConversion";
 import { toLineupPlayer, RosterPlayer } from "../../../packages/simulation-engine/lineup";
 import { computeSimulationInternals, SimStatLine } from "../../../packages/simulation-engine/simulationInternals";
 import { SimPlayer, DisplayAttrs, SimulationInternals } from "../../../packages/simulation-engine/possession";
@@ -146,7 +146,7 @@ export function loadLeagueData(): LeagueData {
   const internalsInput = raw
     .filter((p) => p.seasons.length > 0)
     .map((p) => {
-      const s = p.seasons[p.seasons.length - 1];
+      const s = poolRecentSeasons(p.seasons)!; // 최근 3시즌 가중 합산
       return {
         playerId: p.playerId,
         stat: {
@@ -159,7 +159,7 @@ export function loadLeagueData(): LeagueData {
   const kblStatsForForeignComparison = raw
     .filter((p) => p.seasons.length > 0)
     .map((p) => {
-      const s = p.seasons[p.seasons.length - 1];
+      const s = poolRecentSeasons(p.seasons)!;
       return {
         PTS: s.PTS, REB: s.REB, AST: s.AST, BLK: s.BLK, STL: s.STL,
         FGPct: s["FG%"] / 100, ThreePct: s["3P%"] / 100, FTPct: s["FT%"] / 100,

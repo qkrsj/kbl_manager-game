@@ -9,7 +9,7 @@
  *      잠재력(potential)은 attribute-pipeline에서 "나이 45% + 드래프트 순위 25% + 커리어 기록 추세 30%"로
  *      산출된 값이라, 드래프트 상위 지명·젊은 나이·상승세 기록을 가진 선수가 훈련으로 더 빨리 큰다.
  *      능력치별 소수점 누적치(training_progress)가 +1을 넘는 순간 실제 능력치가 오른다.
- * 2) 노화 — 30세 이상은 매일 운동능력(스피드/체력/덩크/파워/블록/공격리바운드) 중심으로 조금씩 감소.
+ * 2) 노화 — 32세 이상은 매일 운동능력(스피드/체력/덩크/파워/블록/공격리바운드)이 조금씩 감소.
  *    누적치가 -1을 넘으면 실제 하락. "체력" 훈련으로 일부 상쇄 가능.
  * 3) 경기 경험치 — 출전시간과 경기 활약도만큼 XP 획득 (플레이오프 1.5배).
  *    XP_PER_LEVEL마다 레벨업 → 선수 포지션·강점·이번 경기 스탯에 맞는 능력치 +1 (26세 이하 +2개)
@@ -48,6 +48,13 @@ const BASE_DAILY_GAIN = 0.05;
 const DAILY_RECOVERY = 15;
 const REST_BONUS_RECOVERY = 12;
 const AGING_ATTRS: AttrKey[] = ["speed", "stamina", "dunking", "strength", "shot_blocking", "offensive_rebounding"];
+/**
+ * 노화: 32세부터, 하루 0.0015 × (나이-31) 만큼 운동능력 6종에서 누적 감소 (기술 능력치는 감소 없음).
+ * 시즌(약 230일)+비시즌 기준 대략 33세 -0.8, 35세 -1.7, 38세 -3 / 운동능력 항목당.
+ * ⚠️ v1 초기값(30세부터 0.004×(나이-29))은 35세가 한 시즌에 항목당 -7까지 떨어져 과도했음 (사용자 지적)
+ */
+const AGING_START_AGE = 32;
+const agingPerDay = (age: number) => (age >= AGING_START_AGE ? 0.0015 * (age - (AGING_START_AGE - 1)) : 0);
 export const XP_PER_LEVEL = 300;
 
 function ageFactor(age: number): number {
@@ -157,8 +164,8 @@ export async function processDailyDevelopment(
     }
 
     // 노화 (30세 이상, 매일)
-    if (p.age >= 30) {
-      const decline = 0.004 * (p.age - 29);
+    if (p.age >= AGING_START_AGE) {
+      const decline = agingPerDay(p.age);
       for (const a of AGING_ATTRS) progress[a] = (progress[a] ?? 0) - decline * (0.6 + Math.random() * 0.8);
     }
 
@@ -311,7 +318,7 @@ export async function processOffseasonDevelopment(db: Db, date: string): Promise
     const attrs = TRAINING_FOCUS.balanced.attrs;
     const delta: Partial<Record<AttrKey, number>> = {};
     for (const a of attrs) delta[a] = (delta[a] ?? 0) + gainTotal / attrs.length * (0.5 + Math.random());
-    if (p.age >= 30) for (const a of AGING_ATTRS) delta[a] = (delta[a] ?? 0) - 0.004 * (p.age - 29) * 60 * (0.6 + Math.random() * 0.8);
+    if (p.age >= AGING_START_AGE) for (const a of AGING_ATTRS) delta[a] = (delta[a] ?? 0) - agingPerDay(p.age) * 60 * (0.6 + Math.random() * 0.8);
     for (const [k, v] of Object.entries(delta)) {
       const step = Math.trunc(v as number);
       if (step !== 0) changes.push({ playerId: p.id, name: p.name, teamId: p.teamId, attribute: k, label: ATTR_LABEL[k as AttrKey], delta: step, reason: "offseason" });

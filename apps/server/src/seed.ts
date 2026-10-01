@@ -15,6 +15,8 @@ import * as fs from "fs";
 import * as path from "path";
 import { Pool } from "pg";
 import { loadLeagueData, loadForeignEstimates } from "./leagueData";
+import { poolRecentSeasons, sampleReliability } from "../../../packages/attribute-pipeline/attributeConversion";
+import { calibrateRatings, CalibrationGroup, shiftToOverall } from "./ratingCalibration";
 import { generateKblCalendarSchedule } from "../../../packages/simulation-engine/seasonScheduler";
 import { COACHES } from "./coaches";
 import { computeRatings, AttributeRow } from "./ratings";
@@ -38,6 +40,20 @@ const BREAKS = [
 ];
 
 const CONTRACTS_CSV = path.join(__dirname, "../../../data/processed/contracts_2026_27.csv");
+const OVERRIDES_CSV = path.join(__dirname, "../../../data/manual/rating_overrides.csv");
+
+/** 수동 오버롤 조정 (data/manual/rating_overrides.csv: name,overall,reason) — 데이터 보정 후 마지막에 적용 */
+function readOverrides(): Map<string, number> {
+  if (!fs.existsSync(OVERRIDES_CSV)) return new Map();
+  const lines = fs.readFileSync(OVERRIDES_CSV, "utf-8").replace(/^\uFEFF/, "").trim().split(/\r?\n/).slice(1);
+  const out = new Map<string, number>();
+  for (const line of lines) {
+    const [name, overall] = line.split(",");
+    const v = Number(overall);
+    if (name && Number.isFinite(v)) out.set(name.trim(), Math.max(40, Math.min(99, v)));
+  }
+  return out;
+}
 
 /** 이름 기반 결정적 난수 (성실성 등 기록으로 알 수 없는 값의 초기치) */
 function hashUnit(s: string): number {
@@ -121,31 +137,24 @@ export async function seedDatabase(pool: Pool, userTeam?: number | string, log: 
     const kblStatsForForeignComparison = raw
       .filter((p) => p.seasons.length > 0)
       .map((p) => {
-        const s = p.seasons[p.seasons.length - 1];
+        const s = poolRecentSeasons(p.seasons)!;
         return { PTS: s.PTS, REB: s.REB, AST: s.AST, BLK: s.BLK, STL: s.STL, FGPct: s["FG%"] / 100, ThreePct: s["3P%"] / 100, FTPct: s["FT%"] / 100 };
       });
     const foreignEstimates = loadForeignEstimates(kblStatsForForeignComparison);
 
+    // 1단계: 전원 능력치 계산 (DB 삽입 전) → 2단계: 역할·생산성·연봉으로 수준 보정 → 3단계: 삽입
+    interface Draft {
+      name: string; meta: { team: string; position: string; nationality: string }; p: (typeof raw)[number] | undefined;
+      estimate: ReturnType<typeof foreignEstimates.get>; positionGroup: string; isForeign: boolean;
+      contract: ReturnType<typeof contracts.get>; attrs: AttributeRow; potential: number | null; injury: number;
+    }
+    const drafts: Draft[] = [];
     for (const [name, meta] of rosterMeta.entries()) {
-      const teamId = teamIdByName.get(meta.team) ?? null;
       const p = raw.find((r) => r.name === name);
       const estimate = foreignEstimates.get(name);
       const positionGroup = meta.position?.includes("센터") ? "C" : meta.position?.includes("가드") ? "G" : "F";
       const contract = contracts.get(name);
       const isForeign = FOREIGN_OVERRIDE_NAMES.has(name) || (meta.nationality !== "KOR" && meta.nationality !== "PHI");
-
-      const playerRes = await client.query(
-        `INSERT INTO players (name, team_id, nationality, position, position_group, height_cm, weight_kg, birth_date, is_foreign_import, draft_year, draft_overall_pick, draft_category)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`,
-        [
-          name, teamId, meta.nationality, meta.position, positionGroup,
-          p?.heightCm ?? null, p?.weightKg ?? null, p?.birthDate ?? null, isForeign,
-          p?.draftInfo?.kind === "picked" ? ((p as any)?.draftYear ?? null) : null,
-          p?.draftInfo?.kind === "picked" ? (p.draftInfo as any).overallPick : null,
-          p?.draftInfo?.kind ?? null,
-        ]
-      );
-      const playerId = playerRes.rows[0].id;
 
       const d = p ? derivedMap.get(p.playerId) : undefined;
       let attrs: AttributeRow;
@@ -177,6 +186,39 @@ export async function seedDatabase(pool: Pool, userTeam?: number | string, log: 
         };
         potential = 50;
       }
+      drafts.push({ name, meta, p, estimate, positionGroup, isForeign, contract, attrs, potential, injury });
+    }
+
+    const calibration = calibrateRatings(drafts.map((dr) => {
+      const pooled = dr.p ? poolRecentSeasons(dr.p.seasons) : null;
+      const type = dr.contract?.type ?? (dr.isForeign ? "foreign" : dr.meta.nationality === "PHI" ? "asia" : "domestic");
+      return {
+        name: dr.name, group: type as CalibrationGroup, positionGroup: dr.positionGroup,
+        age: dr.p?.ageAtSeasonStart ?? 27, attrs: dr.attrs, pooled, seasons: dr.p?.seasons ?? [], reliability: sampleReliability(pooled),
+        salaryKrw: type === "domestic" ? dr.contract?.krw ?? null : null,
+        rookieContract: (dr.p as any)?.draftYear === 2025,
+      };
+    }));
+
+    const overrides = readOverrides();
+    for (const dr of drafts) {
+      const { name, meta, p, estimate, positionGroup, isForeign, contract, potential, injury } = dr;
+      const calibrated = calibration.get(name)?.attrs ?? dr.attrs;
+      const override = overrides.get(name);
+      const attrs = override !== undefined ? shiftToOverall(calibrated, positionGroup, override) : calibrated;
+      const teamId = teamIdByName.get(meta.team) ?? null;
+      const playerRes = await client.query(
+        `INSERT INTO players (name, team_id, nationality, position, position_group, height_cm, weight_kg, birth_date, is_foreign_import, draft_year, draft_overall_pick, draft_category)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`,
+        [
+          name, teamId, meta.nationality, meta.position, positionGroup,
+          p?.heightCm ?? null, p?.weightKg ?? null, p?.birthDate ?? null, isForeign,
+          p?.draftInfo?.kind === "picked" ? ((p as any)?.draftYear ?? null) : null,
+          p?.draftInfo?.kind === "picked" ? (p.draftInfo as any).overallPick : null,
+          p?.draftInfo?.kind ?? null,
+        ]
+      );
+      const playerId = playerRes.rows[0].id;
       const workEthic = Math.round(55 + hashUnit(name) * 37);
       await client.query(
         `INSERT INTO player_attributes (player_id, season_id, finishing, dunking, mid_range_shooting, three_point_shooting,
