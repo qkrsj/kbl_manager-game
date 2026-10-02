@@ -61,12 +61,17 @@ async function main() {
      FROM player_game_stats s JOIN players p ON p.id=s.player_id WHERE s.min>0 GROUP BY p.name ORDER BY AVG(s.pts) DESC LIMIT 10`
   );
   console.table(lead.rows);
+  // ⚠️ contracts로 외국선수를 판별하면 비시즌에 은퇴·계약 만료된 선수(예: 라건아)가 빠져 출전시간이 적게 집계됨
+  //    → 경기 당시 외국선수 여부(players.is_foreign_import)로 집계하고, 연장 경기는 따로 (연장은 1명 × 5분 추가)
   const foreignMin = await pool.query(
-    `SELECT ROUND(AVG(m)::numeric,1) avg_foreign_minutes_per_team_game FROM (
-       SELECT s.game_id, s.team_id, SUM(s.min) m FROM player_game_stats s JOIN contracts c ON c.player_id=s.player_id
-       WHERE c.contract_type='foreign' GROUP BY s.game_id, s.team_id) x`
+    `SELECT g.went_to_ot AS ot, COUNT(*) AS team_games, ROUND(AVG(m)::numeric,1) AS avg_minutes,
+            COUNT(*) FILTER (WHERE m >= 59.5 + CASE WHEN g.went_to_ot THEN 5 ELSE 0 END) AS full_minutes
+     FROM (SELECT s.game_id, s.team_id, SUM(s.min) m FROM player_game_stats s JOIN players p ON p.id=s.player_id
+           WHERE p.is_foreign_import GROUP BY s.game_id, s.team_id) x JOIN games g ON g.id=x.game_id
+     GROUP BY g.went_to_ot ORDER BY g.went_to_ot`
   );
-  console.log("팀당 외국선수 출전시간(분, 규정상 최대 60)", foreignMin.rows[0]);
+  console.log("팀당 외국선수 출전시간 (정규 40분 경기 최대 60분, 연장마다 +5분)");
+  console.table(foreignMin.rows);
   const dev = await pool.query(`SELECT reason, COUNT(*) n, SUM(delta) s FROM development_log GROUP BY reason`);
   console.table(dev.rows);
 
