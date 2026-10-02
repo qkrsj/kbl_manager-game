@@ -115,8 +115,11 @@ export async function processDailyDevelopment(
   const players = await loadLeaguePlayers(db, date);
   const progressRes = await db.query(`SELECT player_id, training_progress FROM player_condition`);
   const progressMap = new Map<number, Record<string, number>>(progressRes.rows.map((r) => [r.player_id, r.training_progress ?? {}]));
-  const focusRes = await db.query(`SELECT player_id, focus FROM player_training_focus`);
-  const personalFocus = new Map<number, TrainingFocus>(focusRes.rows.map((r) => [r.player_id, r.focus]));
+  // 선수별 훈련 설정 (비어 있는 항목은 팀 계획을 따름)
+  const focusRes = await db.query(`SELECT * FROM player_training_focus`);
+  const personal = new Map<number, { focus: TrainingFocus | null; intensity: TrainingIntensity | null; mode: "rest" | "train" | null }>(
+    focusRes.rows.map((r) => [r.player_id, { focus: r.focus ?? null, intensity: r.intensity ?? null, mode: r.mode ?? null }])
+  );
   const manager = await loadManagerProfile(db); // 유저 감독 프로필 효과 (유저 팀 선수만)
 
   const updates: PendingUpdate[] = [];
@@ -133,7 +136,10 @@ export async function processDailyDevelopment(
     const injured = !isAvailable(p, date);
     let plan: TrainingPlan;
     if (p.teamId === null) plan = { mode: "train", focus: "balanced", intensity: "light" };
-    else if (p.teamId === userTeamId) plan = userPlan;
+    else if (p.teamId === userTeamId) {
+      const own = personal.get(p.id);
+      plan = { mode: own?.mode ?? userPlan.mode, focus: own?.focus ?? userPlan.focus, intensity: own?.intensity ?? userPlan.intensity };
+    }
     else {
       const arr = teamFatigue.get(p.teamId) ?? [0];
       const avg = arr.reduce((a, b) => a + b, 0) / arr.length;
@@ -146,7 +152,7 @@ export async function processDailyDevelopment(
     fatigue -= (DAILY_RECOVERY + (plan.mode === "rest" || injured ? REST_BONUS_RECOVERY : 0)) * (mine ? recoveryMultiplier(manager) : 1);
 
     if (trains) {
-      const focus = (p.teamId === userTeamId ? personalFocus.get(p.id) : undefined) ?? plan.focus;
+      const focus = plan.focus;
       const attrs = TRAINING_FOCUS[focus]?.attrs ?? TRAINING_FOCUS.balanced.attrs;
       const total = dailyGrowthRate(p, plan.intensity) * (mine ? trainingGrowthMultiplier(manager, p.age) : 1);
       for (const a of attrs) {

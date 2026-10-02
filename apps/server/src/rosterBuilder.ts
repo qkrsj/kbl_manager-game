@@ -39,7 +39,21 @@ export interface LeaguePlayer {
   sim: Omit<SimPlayer, "perGameMin">;
 }
 
-const OFFENSE_PRIORITY_PERCENTILE: Record<number, number> = { 1: 97, 2: 88, 3: 78 };
+/**
+ * 공격 1·2·3옵션 자동 선정 (AI 팀, 그리고 유저가 지정하지 않은 경우의 유저 팀)
+ * 주전급(예상 출전 18분 이상) 중 공격 능력치 + 실제 득점 퍼센타일이 높은 순.
+ */
+export function autoOffenseOptions(
+  members: { id: number; ratings: Ratings; sim: { internals: { ptsPercentile: number } } }[],
+  plannedMinutes: (id: number) => number
+): Map<number, 1 | 2 | 3> {
+  const pool = members.filter((p) => plannedMinutes(p.id) >= 18);
+  const ranked = (pool.length >= 3 ? pool : members)
+    .map((p) => ({ id: p.id, score: p.ratings.offense + 0.15 * p.sim.internals.ptsPercentile }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 3);
+  return new Map(ranked.map((r, i) => [r.id, (i + 1) as 1 | 2 | 3]));
+}
 
 export function ageOn(birthDate: string | Date | null, onDate: string): number {
   if (!birthDate) return 27;
@@ -147,12 +161,13 @@ export interface UserTactics {
   reboundEmphasis: boolean;
   defensiveStopperId: number | null;
   clutchCloserId: number | null;
+  offenseOptions: (number | null)[];   // [1옵션, 2옵션, 3옵션] 선수 id
 }
 
 export async function loadUserTactics(db: Db, teamId: number): Promise<UserTactics> {
   const r = await db.query(
     `SELECT pace_style, three_point_reliance, defense_scheme, rebound_emphasis,
-            defensive_stopper_player_id, clutch_closer_player_id
+            defensive_stopper_player_id, clutch_closer_player_id, option1_player_id, option2_player_id, option3_player_id
      FROM team_tactics WHERE team_id=$1`,
     [teamId]
   );
@@ -164,6 +179,7 @@ export async function loadUserTactics(db: Db, teamId: number): Promise<UserTacti
     reboundEmphasis: t?.rebound_emphasis ?? false,
     defensiveStopperId: t?.defensive_stopper_player_id ?? null,
     clutchCloserId: t?.clutch_closer_player_id ?? null,
+    offenseOptions: [t?.option1_player_id ?? null, t?.option2_player_id ?? null, t?.option3_player_id ?? null],
   };
 }
 
@@ -219,24 +235,30 @@ export async function buildTeamSetup(ctx: BuildContext, teamId: number, opponent
     context = { defenseScheme: scheme, threeWeightMultiplier: THREE_MULT[three], reboundEmphasis: plan?.rebound_emphasis ?? tactics.reboundEmphasis, doubleTeamTarget: doubleTeam };
 
     const fallback = aiMinutesPlan(members.map((p) => ({ name: p.name, isForeign: p.isForeign, overall: p.ratings.overall, age: p.age, fatigue: p.fatigue })), { ...coach, rotationDepth: 0.5, youthPreference: 0.4 });
-    roster = members
-      .filter((p) => !userConfigured || p.role !== "inactive") // 설정 이후 새로 합류한 선수(role 없음)는 후보로 취급
-      .map((p) => {
-        const prio = p.offensePriority ? OFFENSE_PRIORITY_PERCENTILE[p.offensePriority] : null;
-        return {
-          ...p.sim,
-          perGameMin: userConfigured ? (p.minutesTarget ?? (p.role === "starter" ? 30 : p.role === "bench" ? 12 : 6)) : fallback.get(p.name) ?? 0,
-          internals: prio ? { ...p.sim.internals, usagePercentile: prio, ptsPercentile: prio } : p.sim.internals,
-          tactics: {
-            isDefensiveStopper: tactics.defensiveStopperId === p.id,
-            isClutchCloser: tactics.clutchCloserId === p.id,
-          },
-        };
-      });
+    const minutesOf = (p: LeaguePlayer) => userConfigured ? (p.minutesTarget ?? (p.role === "starter" ? 30 : p.role === "bench" ? 12 : 6)) : fallback.get(p.name) ?? 0;
+    const active = members.filter((p) => !userConfigured || p.role !== "inactive"); // 설정 이후 새로 합류한 선수(role 없음)는 후보로 취급
+    // 공격 옵션: 유저가 지정한 1·2·3옵션 (출전 가능한 선수만), 하나도 없으면 자동 선정
+    const chosen = new Map<number, 1 | 2 | 3>();
+    tactics.offenseOptions.forEach((id, i) => { if (id && active.some((p) => p.id === id)) chosen.set(id, (i + 1) as 1 | 2 | 3); });
+    if (chosen.size === 0) {
+      active.forEach((p) => { if (p.offensePriority && p.offensePriority >= 1 && p.offensePriority <= 3) chosen.set(p.id, p.offensePriority as 1 | 2 | 3); });
+    }
+    const options = chosen.size > 0 ? chosen : autoOffenseOptions(active, (id) => minutesOf(active.find((p) => p.id === id)!));
+    roster = active.map((p) => ({
+      ...p.sim,
+      perGameMin: minutesOf(p),
+      tactics: {
+        isDefensiveStopper: tactics.defensiveStopperId === p.id,
+        isClutchCloser: tactics.clutchCloserId === p.id,
+        offenseOption: options.get(p.id),
+      },
+    }));
   } else {
     const plan = aiMinutesPlan(members.map((p) => ({ name: p.name, isForeign: p.isForeign, overall: p.ratings.overall, age: p.age, fatigue: p.fatigue })), coach);
     const closer = [...members].sort((a, b) => b.sim.internals.ptsPercentile - a.sim.internals.ptsPercentile)[0];
-    roster = members.map((p) => ({ ...p.sim, perGameMin: plan.get(p.name) ?? 0, tactics: { isClutchCloser: p === closer } }));
+    // AI 팀 공격 옵션: 공격 능력치·득점력 순 상위 3명 (감독 뎁스차트상 주전급 중에서)
+    const options = autoOffenseOptions(members, (id) => plan.get(members.find((p) => p.id === id)!.name) ?? 0);
+    roster = members.map((p) => ({ ...p.sim, perGameMin: plan.get(p.name) ?? 0, tactics: { isClutchCloser: p === closer, offenseOption: options.get(p.id) } }));
     const threats = await opponentThreats(ctx.db, opponentId, ctx.seasonId);
     paceFactor = PACE_FACTOR[coach.paceStyle];
     context = {

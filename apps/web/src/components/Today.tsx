@@ -1,4 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { teamStyle } from "../teamColors";
+import "./calendar.css";
 import { useApi, Loading, ErrorBox, Card, Rating, PlayerLink, useApp, Modal } from "./common";
 import { BoxScore } from "./BoxScore";
 import { api, formatDate, PACE_LABEL, THREE_LABEL, DEFENSE_LABEL, INTENSITY_LABEL, REASON_LABEL } from "../api";
@@ -138,6 +140,105 @@ function TrainingPanel({ plan, setPlan }: { plan: TrainingPlan; setPlan: (p: Tra
   );
 }
 
+interface SchedGame {
+  id: number; game_date: string; home_team: string; away_team: string; home_team_id: number; away_team_id: number;
+  home_score: number | null; away_score: number | null; went_to_ot: boolean; playoff_label: string | null;
+}
+
+const WEEK = ["일", "월", "화", "수", "목", "금", "토"];
+const ymd = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
+/** 달력: 우리 팀 경기(상대·홈/원정·결과), 오늘, 리그 휴식기. 미래 날짜를 고르면 그날까지 진행 */
+function SeasonCalendar({ today, userTeamId, busy, onAdvanceTo, onOpenBox }: {
+  today: string; userTeamId: number; busy: boolean; onAdvanceTo: (date: string) => void; onOpenBox: (gameId: number) => void;
+}) {
+  const { data: mine } = useApi<SchedGame[]>("/api/schedule?teamId=");
+  const { data: all } = useApi<SchedGame[]>("/api/schedule?teamId=all");
+  const [month, setMonth] = useState(() => today.slice(0, 7));
+  const [picked, setPicked] = useState<string | null>(null);
+  useEffect(() => { setMonth(today.slice(0, 7)); setPicked(null); }, [today]);
+
+  const byDate = useMemo(() => new Map((mine ?? []).map((g) => [g.game_date.slice(0, 10), g])), [mine]);
+  const leagueCount = useMemo(() => {
+    const m = new Map<string, number>();
+    (all ?? []).forEach((g) => m.set(g.game_date.slice(0, 10), (m.get(g.game_date.slice(0, 10)) ?? 0) + 1));
+    return m;
+  }, [all]);
+  const seasonStart = (all ?? [])[0]?.game_date.slice(0, 10);
+  const seasonEnd = (all ?? []).at(-1)?.game_date.slice(0, 10);
+
+  const [y, m] = month.split("-").map(Number);
+  const first = new Date(y, m - 1, 1);
+  const cells: (Date | null)[] = Array(first.getDay()).fill(null);
+  for (let d = 1; d <= new Date(y, m, 0).getDate(); d++) cells.push(new Date(y, m - 1, d));
+  while (cells.length % 7) cells.push(null);
+  const shift = (delta: number) => {
+    const d = new Date(y, m - 1 + delta, 1);
+    setMonth(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
+  };
+  const monthGames = [...byDate.values()].filter((g) => g.game_date.startsWith(month));
+  const played = monthGames.filter((g) => g.home_score !== null);
+  const wins = played.filter((g) => (g.home_team_id === userTeamId ? g.home_score! > g.away_score! : g.away_score! > g.home_score!)).length;
+
+  return (
+    <div className="cal">
+      <div className="cal-head">
+        <button className="small" onClick={() => shift(-1)}>‹</button>
+        <b>{y}년 {m}월</b>
+        <button className="small" onClick={() => shift(1)}>›</button>
+        <span className="muted small">{monthGames.length}경기{played.length ? ` · ${wins}승 ${played.length - wins}패` : ""}</span>
+        <span className="cal-spacer" />
+        <button className="small" onClick={() => setMonth(today.slice(0, 7))}>오늘</button>
+      </div>
+      <div className="cal-grid">
+        {WEEK.map((w, i) => <div key={w} className={`cal-wd ${i === 0 ? "sun" : i === 6 ? "sat" : ""}`}>{w}</div>)}
+        {cells.map((d, i) => {
+          if (!d) return <div key={`e${i}`} className="cal-cell empty" />;
+          const key = ymd(d);
+          const g = byDate.get(key);
+          const isToday = key === today;
+          const past = key < today;
+          const inSeason = !!seasonStart && key >= seasonStart && key <= (seasonEnd ?? key);
+          const breakDay = inSeason && !leagueCount.get(key);
+          const home = g ? g.home_team_id === userTeamId : false;
+          const opp = g ? (home ? g.away_team : g.home_team) : "";
+          const result = g && g.home_score !== null ? ((home ? g.home_score! > g.away_score! : g.away_score! > g.home_score!) ? "W" : "L") : null;
+          const clickable = !past && !isToday;
+          return (
+            <div
+              key={key}
+              className={`cal-cell ${isToday ? "today" : ""} ${past ? "past" : ""} ${picked === key ? "picked" : ""} ${g ? "has-game" : ""} ${breakDay ? "break" : ""} ${clickable ? "clickable" : ""}`}
+              onClick={() => { if (g && result) onOpenBox(g.id); else if (clickable) setPicked(picked === key ? null : key); }}
+            >
+              <span className="cal-day">{d.getDate()}</span>
+              {isToday && <span className="cal-today">오늘</span>}
+              {g ? (
+                <div className="cal-game">
+                  <span className="emblem" style={{ width: 26, height: 26, background: teamStyle(opp).primary, fontSize: 8 }}>{teamStyle(opp).abbr}</span>
+                  <span className="cal-opp">{home ? "vs" : "@"} {teamStyle(opp).short}</span>
+                  {result
+                    ? <span className={`cal-res ${result === "W" ? "w" : "l"}`}>{result === "W" ? "승" : "패"} {home ? `${g.home_score}-${g.away_score}` : `${g.away_score}-${g.home_score}`}</span>
+                    : g.playoff_label ? <span className="cal-po">{g.playoff_label}</span> : null}
+                </div>
+              ) : breakDay ? <span className="cal-note">휴식기</span> : null}
+            </div>
+          );
+        })}
+      </div>
+      <div className="cal-foot">
+        {picked ? (
+          <>
+            <span><b>{formatDate(picked)}</b>까지 저장된 훈련 계획으로 진행합니다 (중간에 우리 팀 경기일이 오면 그날 멈춤)</span>
+            <button className="primary" disabled={busy} onClick={() => onAdvanceTo(picked)}>이 날까지 진행 ⏩</button>
+          </>
+        ) : (
+          <span className="muted small">미래 날짜를 누르면 그 날까지 한 번에 진행할 수 있습니다 · 지난 경기를 누르면 박스스코어</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function TodayView() {
   const { go, refresh } = useApp();
   const { data, error, reload } = useApi<Today>("/api/franchise/today");
@@ -173,12 +274,14 @@ export function TodayView() {
 
   const nextDay = () => run(() => api<DayResult>("/api/franchise/advance-day", { body: { plan } }), (r) => setDays([r]));
   const toGame = () => run(() => api<{ days: DayResult[] }>("/api/franchise/advance-to-game", { body: {} }), (r) => setDays(r.days));
+  const advanceTo = (date: string) => run(() => api<{ days: DayResult[]; reason: string }>("/api/franchise/advance-until", { body: { date } }), (r) => { setDays(r.days); setErr(r.reason && r.days.length === 0 ? r.reason : null); });
   const startLive = () => run(() => api<{ sessionId: string }>(`/api/franchise/games/${g!.id}/live`, { body: {} }), (r) => go({ name: "live", sessionId: r.sessionId }));
   const quickSim = () => run(() => api(`/api/franchise/games/${g!.id}/quick-sim`, { body: {} }), () => setBox(g!.id));
 
   const opponentName = g ? g.opponent.name : "";
   return (
     <div className="col" style={{ gap: 16 }}>
+      <SeasonCalendar today={f.date} userTeamId={f.userTeamId} busy={busy} onAdvanceTo={advanceTo} onOpenBox={setBox} />
       <ErrorBox error={err} />
       {g && !g.played && (
         <Card title={<span>🏀 오늘은 경기일 — {g.isHome ? `vs ${opponentName} (홈)` : `@ ${opponentName} (원정)`} {g.playoffLabel && <span className="pill">{g.playoffLabel} {g.game_number_in_series}차전</span>}</span>}>

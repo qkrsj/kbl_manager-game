@@ -7,9 +7,10 @@
 import express, { Request, Response } from "express";
 import cors from "cors";
 import { pool } from "./db";
-import { getFranchise, advanceDay, advanceToNextGameDay, quickSimUserGame, userGameToday } from "./season";
+import { getFranchise, advanceDay, advanceToNextGameDay, advanceUntil, quickSimUserGame, userGameToday } from "./season";
+import { tradeContext, evaluateTrade, proposeTrade, suggestPackages, tradeHistory } from "./trades";
 import { startLiveGame, getLiveGame, updateLiveGame, stepLiveGame } from "./liveGames";
-import { loadLeaguePlayers, coachForTeam, ageOn } from "./rosterBuilder";
+import { loadLeaguePlayers, coachForTeam, ageOn, autoOffenseOptions } from "./rosterBuilder";
 import { aiMinutesPlan } from "./coaches";
 import { teamPayroll, DOMESTIC_CAP, SOFT_CAP_LIMIT, MIN_CAP_RATIO, FOREIGN_TOTAL_CAP_USD, ASIA_CAP_USD, MAX_DOMESTIC_ROSTER, MIN_SALARY } from "./salaryCap";
 import { TRAINING_FOCUS, XP_PER_LEVEL, loadTrainingPlan, dailyGrowthRate } from "./development";
@@ -517,23 +518,41 @@ app.put("/api/franchise/roster", route(async (req) => {
 app.get("/api/franchise/tactics", route(async () => {
   const f = await getFranchise(pool);
   const r = await pool.query(
-    `SELECT pace_style, three_point_reliance, defense_scheme, rebound_emphasis, defensive_stopper_player_id, clutch_closer_player_id
+    `SELECT pace_style, three_point_reliance, defense_scheme, rebound_emphasis, defensive_stopper_player_id, clutch_closer_player_id,
+            option1_player_id, option2_player_id, option3_player_id
      FROM team_tactics WHERE team_id = $1`,
     [f.userTeamId]
   );
-  return r.rows[0] ?? { pace_style: "normal", three_point_reliance: "normal", defense_scheme: "man", rebound_emphasis: false, defensive_stopper_player_id: null, clutch_closer_player_id: null };
+  const row = r.rows[0] ?? { pace_style: "normal", three_point_reliance: "normal", defense_scheme: "man", rebound_emphasis: false, defensive_stopper_player_id: null, clutch_closer_player_id: null, option1_player_id: null, option2_player_id: null, option3_player_id: null };
+  // 지정 안 했을 때 경기에서 쓰이는 자동 공격 옵션 (공격 능력치·득점력 순)
+  const members = (await loadLeaguePlayers(pool, f.date)).filter((p) => p.teamId === f.userTeamId);
+  const auto = autoOffenseOptions(members, (id) => {
+    const p = members.find((m) => m.id === id)!;
+    return p.minutesTarget ?? (p.role === "starter" ? 30 : p.role === "inactive" ? 0 : 20);
+  });
+  return { ...row, auto_options: [...auto.entries()].sort((a, b) => a[1] - b[1]).map(([id]) => id) };
 }));
 
 app.put("/api/franchise/tactics", route(async (req) => {
   const f = await getFranchise(pool);
-  const { paceStyle, threePointReliance, defenseScheme, reboundEmphasis, defensiveStopperPlayerId, clutchCloserPlayerId } = req.body;
+  const { paceStyle, threePointReliance, defenseScheme, reboundEmphasis, defensiveStopperPlayerId, clutchCloserPlayerId, offenseOptions } = req.body;
+  // 공격 1·2·3옵션: 우리 팀 선수만, 중복 없이
+  const opts: (number | null)[] = Array.isArray(offenseOptions) ? offenseOptions.slice(0, 3).map((x: unknown) => (x ? Number(x) : null)) : [null, null, null];
+  while (opts.length < 3) opts.push(null);
+  const ids = opts.filter((x): x is number => !!x);
+  if (new Set(ids).size !== ids.length) throw new Error("같은 선수를 여러 공격 옵션에 지정할 수 없습니다");
+  if (ids.length) {
+    const own = await pool.query(`SELECT COUNT(*) AS n FROM players WHERE id = ANY($1::int[]) AND team_id=$2`, [ids, f.userTeamId]);
+    if (Number(own.rows[0].n) !== ids.length) throw new Error("우리 팀 선수만 공격 옵션으로 지정할 수 있습니다");
+  }
   await pool.query(
-    `INSERT INTO team_tactics (team_id, pace_style, three_point_reliance, defense_scheme, rebound_emphasis, defensive_stopper_player_id, clutch_closer_player_id)
-     VALUES ($1,$2,$3,$4,$5,$6,$7)
+    `INSERT INTO team_tactics (team_id, pace_style, three_point_reliance, defense_scheme, rebound_emphasis, defensive_stopper_player_id, clutch_closer_player_id,
+       option1_player_id, option2_player_id, option3_player_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
      ON CONFLICT (team_id) DO UPDATE SET pace_style=$2, three_point_reliance=$3, defense_scheme=$4, rebound_emphasis=$5,
-       defensive_stopper_player_id=$6, clutch_closer_player_id=$7`,
+       defensive_stopper_player_id=$6, clutch_closer_player_id=$7, option1_player_id=$8, option2_player_id=$9, option3_player_id=$10`,
     [f.userTeamId, paceStyle ?? "normal", threePointReliance ?? "normal", defenseScheme ?? "man", !!reboundEmphasis,
-      defensiveStopperPlayerId ?? null, clutchCloserPlayerId ?? null]
+      defensiveStopperPlayerId ?? null, clutchCloserPlayerId ?? null, opts[0], opts[1], opts[2]]
   );
   return { ok: true };
 }));
@@ -544,6 +563,8 @@ app.get("/api/franchise/training", route(async () => {
   const focuses = Object.entries(TRAINING_FOCUS).map(([key, v]) => ({ key, label: v.label, attributes: v.attrs.map((a) => ATTR_LABEL[a]) }));
   const roster = await teamRoster(f.userTeamId);
   const players = await loadLeaguePlayers(pool, f.date);
+  const pr = await pool.query(`SELECT * FROM player_training_focus WHERE player_id = ANY($1::int[])`, [roster.map((r) => r.id)]);
+  const personal = new Map(pr.rows.map((r) => [r.player_id, r]));
   const recent = await pool.query(
     `SELECT d.log_date, p.name, d.attribute, d.delta, d.reason FROM development_log d JOIN players p ON p.id=d.player_id
      WHERE p.team_id=$1 ORDER BY d.id DESC LIMIT 40`,
@@ -553,10 +574,15 @@ app.get("/api/franchise/training", route(async () => {
     plan, focuses,
     players: roster.map((r) => {
       const lp = players.find((p) => p.id === r.id);
+      const own = personal.get(r.id);
+      const intensity = own?.intensity ?? plan.intensity;
+      const mode = own?.mode ?? plan.mode;
       return {
         id: r.id, name: r.name, age: r.age, positionGroup: r.positionGroup, overall: r.overall, potential: r.potential,
-        fatigue: r.fatigue, injuredUntil: r.injuredUntil, personalFocus: r.personalFocus, xp: r.xp, xpLevel: r.xpLevel,
-        growthRate: lp ? Math.round(dailyGrowthRate(lp, plan.intensity) * 1000) / 1000 : 0,
+        fatigue: r.fatigue, injuredUntil: r.injuredUntil, xp: r.xp, xpLevel: r.xpLevel,
+        personalFocus: own?.focus ?? null, personalIntensity: own?.intensity ?? null, personalMode: own?.mode ?? null,
+        effective: { mode, focus: own?.focus ?? plan.focus, intensity },
+        growthRate: lp && mode === "train" ? Math.round(dailyGrowthRate(lp, intensity) * 1000) / 1000 : 0,
       };
     }),
     recentChanges: recent.rows.map((d) => ({ ...d, label: ATTR_LABEL[d.attribute as keyof typeof ATTR_LABEL] ?? d.attribute })),
@@ -565,7 +591,13 @@ app.get("/api/franchise/training", route(async () => {
 
 app.put("/api/franchise/training", route(async (req) => {
   const f = await getFranchise(pool);
-  const { mode, focus, intensity, personalFocus } = req.body as { mode?: string; focus?: string; intensity?: string; personalFocus?: Record<string, string | null> };
+  const { mode, focus, intensity, personalFocus, personal, applyToAll } = req.body as {
+    mode?: string; focus?: string; intensity?: string; personalFocus?: Record<string, string | null>;
+    personal?: Record<string, { focus?: string | null; intensity?: string | null; mode?: string | null }>;
+    applyToAll?: boolean; // true = 선수별 설정을 모두 지우고 전원 팀 계획을 따름
+  };
+  if (intensity && !["light", "normal", "intense"].includes(intensity)) throw new Error("알 수 없는 훈련 강도입니다");
+  if (mode && !["rest", "train"].includes(mode)) throw new Error("알 수 없는 훈련 방식입니다");
   if (mode || focus || intensity) {
     if (focus && !(focus in TRAINING_FOCUS)) throw new Error("알 수 없는 훈련 초점입니다");
     const cur = await loadTrainingPlan(pool, f.userTeamId);
@@ -574,6 +606,21 @@ app.put("/api/franchise/training", route(async (req) => {
        ON CONFLICT (team_id) DO UPDATE SET mode=$2, focus=$3, intensity=$4`,
       [f.userTeamId, mode ?? cur.mode, focus ?? cur.focus, intensity ?? cur.intensity]
     );
+  }
+  if (applyToAll) {
+    await pool.query(`DELETE FROM player_training_focus WHERE player_id IN (SELECT id FROM players WHERE team_id=$1)`, [f.userTeamId]);
+  }
+  if (personal) {
+    for (const [pid, v] of Object.entries(personal)) {
+      const fc = v.focus || null, it = v.intensity || null, md = v.mode || null;
+      if (fc && !(fc in TRAINING_FOCUS)) throw new Error("알 수 없는 훈련 초점입니다");
+      if (!fc && !it && !md) await pool.query(`DELETE FROM player_training_focus WHERE player_id=$1`, [Number(pid)]);
+      else await pool.query(
+        `INSERT INTO player_training_focus (player_id, focus, intensity, mode) VALUES ($1,$2,$3,$4)
+         ON CONFLICT (player_id) DO UPDATE SET focus=$2, intensity=$3, mode=$4`,
+        [Number(pid), fc, it, md]
+      );
+    }
   }
   if (personalFocus) {
     for (const [pid, fc] of Object.entries(personalFocus)) {
@@ -645,10 +692,25 @@ app.post("/api/franchise/advance-to-game", route(async () => {
 }));
 // (구버전 호환) 다음 경기까지 진행
 app.post("/api/franchise/advance", route(async () => ({ days: await advanceToNextGameDay(pool) })));
+/** 달력: 고른 날짜까지 진행 (우리 팀 경기일이 오면 그날 멈춤) */
+app.post("/api/franchise/advance-until", route(async (req) => {
+  const date = String(req.body?.date ?? "");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error("날짜 형식이 올바르지 않습니다");
+  return advanceUntil(pool, date);
+}));
+
+// ============================================================
+// 트레이드
+// ============================================================
+app.get("/api/trade", route(async (req) => tradeContext(pool, req.query.teamId ? Number(req.query.teamId) : null)));
+app.post("/api/trade/evaluate", route(async (req) => evaluateTrade(pool, Number(req.body.teamId), (req.body.give ?? []).map(Number), (req.body.receive ?? []).map(Number))));
+app.post("/api/trade/propose", route(async (req) => proposeTrade(pool, Number(req.body.teamId), (req.body.give ?? []).map(Number), (req.body.receive ?? []).map(Number))));
+app.post("/api/trade/suggest", route(async (req) => suggestPackages(pool, Number(req.body.teamId), (req.body.receive ?? []).map(Number))));
+app.get("/api/trade/history", route(async () => tradeHistory(pool)));
 
 app.post("/api/franchise/games/:id/quick-sim", route(async (req) => quickSimUserGame(pool, Number(req.params.id))));
 app.post("/api/franchise/games/:id/live", route(async (req) => startLiveGame(pool, Number(req.params.id))));
-app.get("/api/live/:sid", route(async (req) => getLiveGame(String(req.params.sid))));
+app.get("/api/live/:sid", route(async (req) => getLiveGame(String(req.params.sid), Number(req.query.since ?? 0))));
 app.post("/api/live/:sid/update", route(async (req) => updateLiveGame(String(req.params.sid), req.body ?? {})));
 app.post("/api/live/:sid/step", route(async (req) => stepLiveGame(pool, String(req.params.sid), req.body ?? {})));
 

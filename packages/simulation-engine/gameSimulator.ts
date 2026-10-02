@@ -75,6 +75,46 @@ export interface PlayByPlay {
   scoring: boolean;
 }
 
+/** 중계 화면용 "한 동작" (패스·슛·리바운드 등) */
+export interface PlayBeat {
+  kind: "bring" | "pass" | "shot" | "ft" | "turnover" | "steal" | "foul" | "block" | "oreb" | "dreb" | "info";
+  side: "home" | "away";       // 동작한 선수의 팀
+  actor: string;
+  target?: string;             // 패스 받는 선수
+  shotType?: ShotType;
+  made?: boolean;
+  points?: number;
+  text: string;
+}
+
+/** 포제션 하나 (중계 화면이 한 동작씩 재생) */
+export interface PossessionPlay {
+  seq: number;
+  quarter: number;
+  clockStart: string;
+  clockEnd: string;
+  offense: "home" | "away";
+  beats: PlayBeat[];
+  points: number;
+  homeScore: number;
+  awayScore: number;
+  homeOnCourt: string[];
+  awayOnCourt: string[];
+  quarterEnd?: boolean;        // 이 포제션으로 쿼터(연장)가 끝남
+}
+
+interface SegmentState {
+  quarter: number;
+  possessions: number;         // 팀당 포제션 수
+  i: number;                   // 진행한 포제션(양 팀 합산)
+  homeStarts: boolean;
+  segInQuarter: number;
+  quarterSeconds: number;
+  homePts: number;
+  awayPts: number;
+  courtShare: Map<string, number>;
+}
+
 interface LiveTeam {
   setup: TeamGameSetup;
   box: TeamBoxScore;
@@ -175,6 +215,66 @@ function describePossession(events: PossessionEvent[]): string[] {
   return lines;
 }
 
+/** 포제션 이벤트 → 중계 동작 목록 (패스 하나하나까지) */
+function toBeats(events: PossessionEvent[], offSide: "home" | "away"): PlayBeat[] {
+  const defSide = offSide === "home" ? "away" : "home";
+  const beats: PlayBeat[] = [];
+  let holder: string | null = null; // 지금 공을 가진 공격수
+  if (events.length > 0) {
+    const first = events.find((e) => e.type === "PASS" || e.type === "SHOT" || e.type === "TURNOVER" || e.type === "FT");
+    if (first) {
+      beats.push({ kind: "bring", side: offSide, actor: first.actor, text: `${first.actor} 공을 몰고 넘어옵니다` });
+      holder = first.actor;
+    }
+  }
+  /** 기록에 없는 패스(공격 리바운드 뒤 빼주기 등)를 채워서 공이 순간이동하지 않게 */
+  const handTo = (actor: string) => {
+    if (holder && holder !== actor) beats.push({ kind: "pass", side: offSide, actor: holder, target: actor, text: `${holder} → ${actor} 패스` });
+    holder = actor;
+  };
+  for (let i = 0; i < events.length; i++) {
+    const e = events[i];
+    const next = events[i + 1];
+    switch (e.type) {
+      case "PASS": {
+        // 받는 선수 = 다음 공격 동작의 주인 (패스미스면 다음 이벤트가 같은 선수의 턴오버)
+        const recv = events.slice(i + 1).find((x) => x.type === "PASS" || x.type === "SHOT" || x.type === "FT" || (x.type === "TURNOVER"));
+        if (recv && recv.actor !== e.actor) {
+          holder = e.actor;
+          handTo(recv.actor);
+        }
+        break;
+      }
+      case "SHOT": {
+        handTo(e.actor);
+        const label = e.putback ? `세컨찬스 ${SHOT_LABEL[e.shotType!]}` : SHOT_LABEL[e.shotType!];
+        const blocked = next?.type === "BLOCK";
+        const text = e.made
+          ? `${e.actor} ${label} 성공! +${e.points}${e.assister ? ` (어시스트 ${e.assister})` : ""}`
+          : blocked ? `${e.actor} ${label} 시도…` : `${e.actor} ${label} 실패`;
+        beats.push({ kind: "shot", side: offSide, actor: e.actor, shotType: e.shotType, made: !!e.made, points: e.points ?? 0, text });
+        break;
+      }
+      case "BLOCK": beats.push({ kind: "block", side: defSide, actor: e.actor, text: `${e.actor} 블록슛!` }); break;
+      case "FT": beats.push({ kind: "ft", side: offSide, actor: e.actor, made: !!e.made, points: e.made ? 1 : 0, text: `${e.actor} 자유투 ${e.made ? "성공" : "실패"}` }); break;
+      case "TURNOVER": {
+        const steal = next?.type === "STEAL";
+        if (!steal) beats.push({ kind: "turnover", side: offSide, actor: e.actor, text: `${e.actor} 턴오버` });
+        break;
+      }
+      case "STEAL": {
+        const loser = events[i - 1]?.actor ?? "";
+        beats.push({ kind: "steal", side: defSide, actor: e.actor, target: loser, text: `${e.actor} 스틸! (${loser}의 공을 가로챔)` });
+        break;
+      }
+      case "FOUL": beats.push({ kind: "foul", side: defSide, actor: e.actor, text: `${e.actor} 파울 (${e.detail === "drive" ? "돌파 저지" : "슈팅 파울"})` }); break;
+      case "REBOUND_OFF": beats.push({ kind: "oreb", side: offSide, actor: e.actor, text: `${e.actor} 공격 리바운드!` }); holder = e.actor; break;
+      case "REBOUND_DEF": beats.push({ kind: "dreb", side: defSide, actor: e.actor, text: `${e.actor} 수비 리바운드` }); break;
+    }
+  }
+  return beats;
+}
+
 function formatClock(secondsLeft: number): string {
   const s = Math.max(0, Math.round(secondsLeft));
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
@@ -207,7 +307,9 @@ export class LiveGame {
   readonly away: LiveTeam;
   segmentIndex = 0;            // 완료된 구간 수
   log: PlayByPlay[] = [];
+  plays: PossessionPlay[] = [];
   finished = false;
+  private seg: SegmentState | null = null;
 
   constructor(home: TeamGameSetup, away: TeamGameSetup) {
     this.home = this.initTeam(home);
@@ -307,56 +409,101 @@ export class LiveGame {
     });
   }
 
-  /** 구간 하나(5분) 진행 */
-  playSegment(): void {
-    if (this.finished) return;
+  /** 구간(5분) 진행 중인지 — 진행 중이면 다음 포제션은 같은 구간에서 이어짐 */
+  get inSegment(): boolean {
+    return this.seg !== null;
+  }
+
+  /** 지금 쿼터가 진행 중인지 (쿼터 시작 전이면 false) */
+  get quarterInProgress(): boolean {
+    if (this.finished) return false;
+    if (this.seg) return true;
+    return this.segmentIndex < REGULATION_SEGMENTS && this.segmentIndex % 2 === 1;
+  }
+
+  private startSegment() {
     const quarter = this.quarter;
     const isOT = quarter >= 5;
     const scoreGap = Math.abs(this.home.box.totalScore - this.away.box.totalScore);
     const closing = (this.segmentIndex === REGULATION_SEGMENTS - 1 || isOT) && scoreGap <= 10;
-
     for (const t of [this.home, this.away]) t.onCourt = this.pickLineup(t, closing);
-
     const pace = (this.home.setup.paceFactor + this.away.setup.paceFactor) / 2;
-    const possessions = Math.max(6, Math.round(POSSESSIONS_PER_SEGMENT * pace + (Math.random() - 0.5)));
-    const courtShare = new Map<string, number>();
-    const homeStarts = this.segmentIndex % 2 === 0;
-    const segInQuarter = isOT ? 0 : this.segmentIndex % 2;
-    const quarterSeconds = isOT ? 300 : 600;
+    this.seg = {
+      quarter,
+      possessions: Math.max(6, Math.round(POSSESSIONS_PER_SEGMENT * pace + (Math.random() - 0.5))),
+      i: 0,
+      homeStarts: this.segmentIndex % 2 === 0,
+      segInQuarter: isOT ? 0 : this.segmentIndex % 2,
+      quarterSeconds: isOT ? 300 : 600,
+      homePts: 0,
+      awayPts: 0,
+      courtShare: new Map(),
+    };
+  }
 
-    let homePts = 0;
-    let awayPts = 0;
-    for (let i = 0; i < possessions * 2; i++) {
-      const homeOff = (i % 2 === 0) === homeStarts;
-      const off = homeOff ? this.home : this.away;
-      const def = homeOff ? this.away : this.home;
-      const late = quarter >= 4;
-      const offLineup = off.onCourt.map((p) => withEnergy(late ? clutchBoost(p) : p, off.energy.get(p.name) ?? 100));
-      const defLineup = def.onCourt.map((p) => withEnergy(p, def.energy.get(p.name) ?? 100));
+  /** 작전타임 교체: 구간 진행 중이면 지정 라인업을 바로 코트에 투입 */
+  substituteNow(side: "home" | "away") {
+    if (!this.seg) return;
+    const t = this.team(side);
+    if (t.manualLineup) t.onCourt = this.pickLineup(t, false);
+  }
 
-      const result = simulatePossession(offLineup, defLineup, off.setup.context, def.setup.context);
-      applyEventsToBox(result.events, off.box.players, def.box.players);
-      off.box.totalScore += result.points;
-      if (homeOff) homePts += result.points; else awayPts += result.points;
+  /** 포제션 하나 진행 (구간 시작/정산은 자동). 진행한 포제션을 돌려준다 */
+  playPossession(): PossessionPlay | null {
+    if (this.finished) return null;
+    if (!this.seg) this.startSegment();
+    const seg = this.seg!;
+    const quarter = seg.quarter;
+    const total = seg.possessions * 2;
+    const homeOff = (seg.i % 2 === 0) === seg.homeStarts;
+    const off = homeOff ? this.home : this.away;
+    const def = homeOff ? this.away : this.home;
+    const late = quarter >= 4;
+    const offLineup = off.onCourt.map((p) => withEnergy(late ? clutchBoost(p) : p, off.energy.get(p.name) ?? 100));
+    const defLineup = def.onCourt.map((p) => withEnergy(p, def.energy.get(p.name) ?? 100));
 
-      const secondsLeft = quarterSeconds - (segInQuarter * 300 + ((i + 1) / (possessions * 2)) * 300);
-      for (const text of describePossession(result.events)) {
-        this.log.push({
-          quarter, clock: formatClock(secondsLeft), team: off.setup.name, text,
-          homeScore: this.home.box.totalScore, awayScore: this.away.box.totalScore, scoring: result.points > 0,
-        });
-      }
+    const result = simulatePossession(offLineup, defLineup, off.setup.context, def.setup.context);
+    applyEventsToBox(result.events, off.box.players, def.box.players);
+    off.box.totalScore += result.points;
+    if (homeOff) seg.homePts += result.points; else seg.awayPts += result.points;
 
-      for (const t of [this.home, this.away]) t.onCourt.forEach((p) => courtShare.set(p.name, (courtShare.get(p.name) ?? 0) + 1));
-      this.replaceFouledOut(this.home);
-      this.replaceFouledOut(this.away);
+    const secondsAt = (k: number) => seg.quarterSeconds - (seg.segInQuarter * 300 + (k / total) * 300);
+    const clockEnd = formatClock(secondsAt(seg.i + 1));
+    for (const text of describePossession(result.events)) {
+      this.log.push({
+        quarter, clock: clockEnd, team: off.setup.name, text,
+        homeScore: this.home.box.totalScore, awayScore: this.away.box.totalScore, scoring: result.points > 0,
+      });
     }
+    const play: PossessionPlay = {
+      seq: this.plays.length + 1, quarter, clockStart: formatClock(secondsAt(seg.i)), clockEnd,
+      offense: homeOff ? "home" : "away", beats: toBeats(result.events, homeOff ? "home" : "away"), points: result.points,
+      homeScore: this.home.box.totalScore, awayScore: this.away.box.totalScore,
+      homeOnCourt: this.home.onCourt.map((p) => p.name), awayOnCourt: this.away.onCourt.map((p) => p.name),
+    };
+    this.plays.push(play);
 
-    // 출전시간·체력 정산
+    for (const t of [this.home, this.away]) t.onCourt.forEach((p) => seg.courtShare.set(p.name, (seg.courtShare.get(p.name) ?? 0) + 1));
+    this.replaceFouledOut(this.home);
+    this.replaceFouledOut(this.away);
+
+    seg.i++;
+    if (seg.i >= total) {
+      const quarterBefore = this.quarter;
+      this.finishSegment();
+      if (this.finished || this.quarter !== quarterBefore) play.quarterEnd = true;
+    }
+    return play;
+  }
+
+  /** 구간 정산: 출전시간·체력·쿼터 점수, 경기 종료 판정 */
+  private finishSegment() {
+    const seg = this.seg!;
+    const total = seg.possessions * 2;
     for (const t of [this.home, this.away]) {
       const drainMult = t.setup.context.defenseScheme === "press" ? 1.25 : 1;
       for (const p of t.setup.roster) {
-        const share = (courtShare.get(p.name) ?? 0) / (possessions * 2);
+        const share = (seg.courtShare.get(p.name) ?? 0) / total;
         const played = share * SEGMENT_MINUTES;
         t.minutes.set(p.name, (t.minutes.get(p.name) ?? 0) + played);
         getOrCreate(t.box.players, p.name).MIN += played;
@@ -366,13 +513,12 @@ export class LiveGame {
         t.energy.set(p.name, Math.max(0, Math.min(100, e - drain + recover)));
       }
     }
-
-    const qIdx = quarter - 1;
-    for (const [t, pts] of [[this.home, homePts], [this.away, awayPts]] as const) {
+    const qIdx = seg.quarter - 1;
+    for (const [t, pts] of [[this.home, seg.homePts], [this.away, seg.awayPts]] as const) {
       while (t.box.quarterScores.length <= qIdx) t.box.quarterScores.push(0);
       t.box.quarterScores[qIdx] += pts;
     }
-
+    this.seg = null;
     this.segmentIndex++;
     const regulationDone = this.segmentIndex >= REGULATION_SEGMENTS;
     const tied = this.home.box.totalScore === this.away.box.totalScore;
@@ -380,6 +526,13 @@ export class LiveGame {
       if (tied) this.home.box.totalScore += 1; // 극히 드문 무한 연장 안전장치
       this.finished = true;
     }
+  }
+
+  /** 구간 하나(5분) 끝까지 진행 (이미 진행 중이면 남은 포제션만) */
+  playSegment(): void {
+    if (this.finished) return;
+    const startIdx = this.segmentIndex;
+    while (!this.finished && this.segmentIndex === startIdx) this.playPossession();
   }
 
   runToEnd(): GameResult {

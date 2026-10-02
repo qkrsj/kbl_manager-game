@@ -66,9 +66,15 @@ export function normalizeProfile(input: unknown): ManagerProfile {
   };
 }
 
-/** 프로필 컬럼 (구버전 DB에도 자동으로 추가) */
+/** 새 기능용 컬럼 (구버전 DB에도 자동으로 추가) — 감독 프로필, 선수별 훈련 강도·휴식 */
 export async function ensureManagerSchema(db: Db) {
   await db.query(`ALTER TABLE franchise ADD COLUMN IF NOT EXISTS manager_profile JSONB`);
+  await db.query(`ALTER TABLE player_training_focus ALTER COLUMN focus DROP NOT NULL`);
+  await db.query(`ALTER TABLE player_training_focus ADD COLUMN IF NOT EXISTS intensity TEXT`);
+  await db.query(`ALTER TABLE player_training_focus ADD COLUMN IF NOT EXISTS mode TEXT`);
+  for (const n of [1, 2, 3]) {
+    await db.query(`ALTER TABLE team_tactics ADD COLUMN IF NOT EXISTS option${n}_player_id INTEGER REFERENCES players(id) ON DELETE SET NULL`);
+  }
 }
 
 export async function loadManagerProfile(db: Db): Promise<ManagerProfile | null> {

@@ -11,6 +11,7 @@ import { ScheduleView } from "./components/Schedule";
 import { PlayerView, PlayerSearch } from "./components/Player";
 import { OffseasonView } from "./components/Offseason";
 import { SalaryCapView } from "./components/Misc";
+import { TradeView } from "./components/Trade";
 import { Splash } from "./components/Splash";
 import { TitleScreen } from "./components/Title";
 import { NewGameFlow } from "./components/NewGame";
@@ -92,6 +93,7 @@ function App() {
     case "schedule": body = <><SubTabs items={SCHEDULE_TABS} current="schedule" /><ScheduleView /></>; break;
     case "live": body = <LiveGameView sessionId={view.sessionId} />; break;
     case "office": body = <OfficeView />; break;
+    case "trade": body = <TradeView />; break;
     case "player": body = <PlayerView id={view.id} />; break;
     case "offseason": body = <OffseasonView />; break;
   }

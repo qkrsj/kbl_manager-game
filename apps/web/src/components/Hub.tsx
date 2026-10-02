@@ -15,15 +15,16 @@ import "./hub.css";
 // 섹션 구성 (상단 메뉴)
 // ============================================================
 
-export type SectionKey = "home" | "myteam" | "teams" | "league" | "training" | "schedule" | "office" | "offseason";
+export type SectionKey = "home" | "myteam" | "teams" | "trade" | "league" | "training" | "schedule" | "office" | "offseason";
 
 export const SECTIONS: { key: SectionKey; label: string; icon: string; view: View }[] = [
   { key: "home", label: "홈", icon: "🏠", view: { name: "dashboard" } },
   { key: "myteam", label: "내 팀", icon: "👥", view: { name: "myteam" } },
   { key: "teams", label: "다른 팀", icon: "🏀", view: { name: "teams" } },
+  { key: "trade", label: "트레이드", icon: "🔁", view: { name: "trade" } },
   { key: "league", label: "순위·기록", icon: "🏆", view: { name: "league" } },
   { key: "training", label: "훈련", icon: "💪", view: { name: "training" } },
-  { key: "schedule", label: "일정", icon: "📅", view: { name: "schedule" } },
+  { key: "schedule", label: "달력·일정", icon: "📅", view: { name: "today" } },
   { key: "office", label: "감독실", icon: "🎽", view: { name: "office" } },
   { key: "offseason", label: "비시즌", icon: "✍️", view: { name: "offseason" } },
 ];
@@ -37,6 +38,7 @@ export function sectionOf(v: View): SectionKey | null {
     case "training": return "training";
     case "today": case "schedule": case "live": return "schedule";
     case "office": return "office";
+    case "trade": return "trade";
     case "offseason": return "offseason";
     default: return null;
   }
@@ -61,8 +63,8 @@ export const MYTEAM_TABS: { label: string; view: View }[] = [
   { label: "연봉·샐러리캡", view: { name: "cap" } },
 ];
 export const SCHEDULE_TABS: { label: string; view: View }[] = [
-  { label: "오늘", view: { name: "today" } },
-  { label: "시즌 일정", view: { name: "schedule" } },
+  { label: "달력·오늘", view: { name: "today" } },
+  { label: "전체 일정·결과", view: { name: "schedule" } },
 ];
 
 // ============================================================

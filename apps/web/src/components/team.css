@@ -1,0 +1,60 @@
+/* 출전시간 편집 · 전술 */
+.mr-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)) auto; gap: 10px; align-items: stretch; }
+.mr-stat { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 10px 14px; display: flex; flex-direction: column; gap: 3px; box-shadow: var(--shadow); }
+.mr-stat > span { font-size: 12px; color: var(--muted); }
+.mr-stat b { font-size: 24px; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.mr-stat b small { font-size: 13px; color: var(--muted); font-weight: 600; }
+.mr-stat > small { font-size: 11px; color: var(--muted); }
+.mr-stat.over { border-color: var(--bad); }
+.mr-stat.over b { color: var(--bad); }
+.mr-stat.under b { color: var(--warn); }
+.mr-meter { height: 6px; background: var(--border); border-radius: 4px; overflow: hidden; }
+.mr-meter > div { height: 100%; background: var(--good); }
+.mr-stat.over .mr-meter > div { background: var(--bad); }
+.mr-stat.under .mr-meter > div { background: var(--warn); }
+.mr-actions { display: flex; flex-direction: column; gap: 6px; justify-content: center; }
+
+.mr-dist { display: flex; height: 30px; border-radius: 8px; overflow: hidden; gap: 2px; background: var(--border); }
+.mr-seg { display: flex; align-items: center; justify-content: center; min-width: 0; font-size: 11px; font-weight: 700; color: #fff; overflow: hidden; white-space: nowrap; }
+.mr-seg span { overflow: hidden; text-overflow: ellipsis; padding: 0 4px; }
+.mr-seg.starter { background: var(--team, #2563eb); }
+.mr-seg.bench { background: color-mix(in srgb, var(--team, #2563eb) 50%, #64748b); }
+
+.mr-list { display: flex; flex-direction: column; gap: 6px; }
+.mr {
+  display: grid; grid-template-columns: auto minmax(160px, 1.3fr) 80px minmax(220px, 2fr) auto; gap: 12px; align-items: center;
+  padding: 8px 10px; border-radius: 10px; background: var(--panel-2);
+}
+.mr.starter { border-left: 4px solid var(--team, #2563eb); }
+.mr.inactive { opacity: 0.7; }
+.mr-name { display: flex; flex-direction: column; min-width: 0; }
+.mr-name > span { display: flex; gap: 6px; align-items: center; font-weight: 700; flex-wrap: wrap; }
+.mr-name small { color: var(--muted); font-size: 11px; }
+.mr-min { display: flex; align-items: center; gap: 6px; }
+.mr-min input[type="range"] { flex: 1; accent-color: var(--team, #2563eb); padding: 0; border: none; background: none; min-width: 80px; }
+.mr-min-val { min-width: 46px; text-align: right; font-size: 18px; font-variant-numeric: tabular-nums; }
+.mr-min-val small { font-size: 11px; color: var(--muted); }
+.mr-move { display: flex; gap: 4px; justify-content: flex-end; }
+
+.opt-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.opt-slot { display: flex; gap: 12px; align-items: flex-start; border-radius: 12px; padding: 12px; background: var(--panel-2); border: 1px solid var(--border); }
+.opt-slot.o1 { border-color: color-mix(in srgb, #e11d48 50%, var(--border)); }
+.opt-rank { width: 38px; height: 38px; border-radius: 50%; display: grid; place-items: center; font-family: "Anton", Impact, sans-serif; font-size: 20px; color: #fff; background: #64748b; flex-shrink: 0; }
+.o1 .opt-rank { background: #e11d48; }
+.o2 .opt-rank { background: #f97316; }
+.o3 .opt-rank { background: #eab308; }
+.opt-body { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1; }
+.opt-body small { color: var(--muted); font-size: 12px; }
+.opt-body select { width: 100%; }
+.tac-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }
+.tac-item { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.tac-item > span { font-weight: 700; font-size: 13px; }
+
+@media (max-width: 900px) {
+  .mr-summary { grid-template-columns: 1fr 1fr; }
+  .mr-actions { grid-column: 1 / -1; flex-direction: row; }
+  .mr { grid-template-columns: auto 1fr auto; }
+  .mr-fatigue { display: none; }
+  .mr-min { grid-column: 1 / -1; }
+  .opt-grid { grid-template-columns: 1fr; }
+}

@@ -1,0 +1,39 @@
+/* 시즌 달력 */
+.cal { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 14px; box-shadow: var(--shadow); }
+.cal-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.cal-head b { font-size: 18px; }
+.cal-spacer { flex: 1; }
+.cal-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; }
+.cal-wd { text-align: center; font-size: 12px; color: var(--muted); font-weight: 700; padding: 4px 0; }
+.cal-wd.sun { color: #e11d48; }
+.cal-wd.sat { color: #2563eb; }
+.cal-cell {
+  position: relative; min-height: 86px; border-radius: 10px; padding: 6px; background: var(--panel-2);
+  border: 1px solid transparent; display: flex; flex-direction: column; gap: 4px; overflow: hidden;
+}
+.cal-cell.empty { background: none; }
+.cal-cell.past { opacity: 0.55; }
+.cal-cell.has-game { background: color-mix(in srgb, var(--team, #2563eb) 10%, var(--panel-2)); }
+.cal-cell.break { background: repeating-linear-gradient(135deg, var(--panel-2), var(--panel-2) 6px, var(--border) 6px, var(--border) 7px); }
+.cal-cell.today { border: 2px solid var(--team, #e11d48); opacity: 1; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12); }
+.cal-cell.clickable { cursor: pointer; }
+.cal-cell.clickable:hover { border-color: var(--accent); }
+.cal-cell.has-game.past { cursor: pointer; }
+.cal-cell.picked { border: 2px dashed var(--accent); background: var(--accent-soft); }
+.cal-day { font-size: 12px; font-weight: 700; color: var(--muted); }
+.cal-today { position: absolute; top: 5px; right: 6px; font-size: 10px; font-weight: 800; color: #fff; background: var(--team, #e11d48); padding: 1px 6px; border-radius: 999px; }
+.cal-game { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; }
+.cal-opp { font-size: 12px; font-weight: 700; }
+.cal-res { font-size: 11px; font-weight: 800; padding: 1px 6px; border-radius: 6px; color: #fff; }
+.cal-res.w { background: var(--good); }
+.cal-res.l { background: var(--bad); }
+.cal-po { font-size: 10px; color: var(--accent); font-weight: 700; }
+.cal-note { font-size: 11px; color: var(--muted); }
+.cal-foot { margin-top: 10px; display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; font-size: 13px; }
+@media (max-width: 760px) {
+  .cal-cell { min-height: 58px; padding: 4px; }
+  .cal-game .emblem { width: 18px !important; height: 18px !important; font-size: 6px !important; }
+  .cal-opp { font-size: 10px; }
+  .cal-res { font-size: 9px; padding: 0 3px; }
+  .cal-today { display: none; }
+}

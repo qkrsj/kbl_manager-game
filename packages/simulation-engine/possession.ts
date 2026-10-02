@@ -61,6 +61,7 @@ export interface TacticsOverride {
   threeWeightMultiplier?: number; // 기본 1.0. 3점 슛종류 선택 가중치 배수
   isDefensiveStopper?: boolean;   // 상대 최고usage 선수를 포지션 무관 전담마크
   isClutchCloser?: boolean;       // 4쿼터에 usage/득점력 부스트 (gameSimulator에서 적용)
+  offenseOption?: 1 | 2 | 3;      // 공격 1·2·3옵션 — 이 선수 위주로 공을 돌리고 슛 기회를 준다
 }
 
 export type DefenseScheme = "man" | "zone" | "press";
@@ -135,6 +136,13 @@ const DOUBLE_TEAM_TURNOVER_MULT = 1.2;
 const OPEN_LOOK_BONUS = 0.035;          // 더블팀을 피해 빠져나온 패스를 받은 선수의 오픈샷 보너스
 
 const REBOUND_EMPHASIS_MULT = 1.12;
+
+// 공격 옵션(1·2·3옵션) 효과: 공을 더 자주 받고(패스 대상 가중치), 받았을 때 더 자주 슛을 쏜다.
+// 옵션 순서대로 차이를 크게 둬서 "1옵션 20점대, 2옵션 10점대 중후반, 3옵션 10점 안팎"처럼 위계가 생기게 한다
+// (세 명을 똑같이 최상위로 두면 셋 다 20점을 넘는 비현실적인 분포가 나옴).
+export const OPTION_SHOT_MULT: Record<1 | 2 | 3, number> = { 1: 1.65, 2: 1.2, 3: 1.0 };
+export const OPTION_PASS_MULT: Record<1 | 2 | 3, number> = { 1: 1.9, 2: 1.35, 3: 1.1 };
+const OPTION_SHOT_CAP = 0.48;
 
 // ============================================================
 // 유틸리티
@@ -272,6 +280,8 @@ export function simulatePossession(
     // ⚠️ 상한이 없으면 극단적 고usage 선수가 "패스도 몰리고 + 받으면 거의 다 쏨"으로 폭주.
     const shotProbExponent = holder.tactics?.shotProbExponent ?? SHOT_PROB_EXPONENT;
     let shotAttemptProb = Math.min(SHOT_PROB_CAP, Math.pow(rawFactor, shotProbExponent));
+    const option = holder.tactics?.offenseOption;
+    if (option) shotAttemptProb = Math.min(OPTION_SHOT_CAP, shotAttemptProb * OPTION_SHOT_MULT[option]);
     if (doubled) shotAttemptProb *= DOUBLE_TEAM_SHOT_PROB_MULT;
     // ⚠️ 볼을 운반한 가드의 "첫 터치 즉시슛"이 과도하면 가드·아시아쿼터 득점이 비현실적으로 부풀려짐
     // (v1 시즌 시뮬 검증 중 발견: 아시아쿼터 가드 3명이 25점대). 첫 터치는 세트오펜스 전개 단계로 보고 감쇠.
@@ -361,11 +371,17 @@ export function simulatePossession(
     lastPasser = holder;
     openLook = doubled; // 더블팀에서 빠져나온 패스 → 받는 선수는 오픈 찬스
     const candidates = offense.filter((p) => p !== holder);
-    holder = weightedPick(candidates, (p) => Math.pow(p.internals.usagePercentile, PASS_TARGET_USAGE_POWER));
+    holder = weightedPick(candidates, passTargetWeight);
   }
 
   // 체인 길이 초과 시 안전장치 (도달 안 하는 게 정상)
   return { points: 0, turnover: false, events };
+}
+
+/** 패스 받을 선수 가중치: usage 퍼센타일 + 공격 옵션 보너스 */
+function passTargetWeight(p: SimPlayer): number {
+  const opt = p.tactics?.offenseOption;
+  return Math.pow(p.internals.usagePercentile, PASS_TARGET_USAGE_POWER) * (opt ? OPTION_PASS_MULT[opt] : 1);
 }
 
 function finishWithRebound(
@@ -418,7 +434,7 @@ function simulatePossessionContinued(
       return { points: 0, turnover: false, events: priorEvents };
     }
     const candidates = offense.filter((p) => p !== holder);
-    holder = weightedPick(candidates, (p) => Math.pow(p.internals.usagePercentile, PASS_TARGET_USAGE_POWER));
+    holder = weightedPick(candidates, passTargetWeight);
   }
   return { points: 0, turnover: false, events: priorEvents };
 }

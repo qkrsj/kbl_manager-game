@@ -7,6 +7,7 @@
  *  - 경기가 없는 팀은 훈련/휴식 (유저 팀은 유저가 고른 계획) → development.ts
  *  - 정규시즌이 끝나면 플레이오프 생성, 챔피언이 결정되면 비시즌(offseason.ts)으로 전환
  */
+import { maybeAiTrade } from "./trades";
 import { Pool, PoolClient } from "pg";
 import { GameResult, LiveGame } from "../../../packages/simulation-engine/gameSimulator";
 import { addDays } from "../../../packages/simulation-engine/seasonScheduler";
@@ -195,6 +196,8 @@ export async function advanceDay(pool: Pool, planOverride?: TrainingPlan): Promi
 
     // 시즌 단계 전환
     const events: string[] = [];
+    const aiTrade = await maybeAiTrade(db); // AI 팀끼리 트레이드 (아주 드물게)
+    if (aiTrade) events.push(aiTrade);
     let phase: FranchiseState["phase"] = f.phase;
     let nextDate = addDays(f.date, 1);
     if (phase === "regular") {
@@ -227,6 +230,29 @@ export async function advanceDay(pool: Pool, planOverride?: TrainingPlan): Promi
       trainingPlan: played.has(f.userTeamId) ? null : plan,
     };
   });
+}
+
+/**
+ * 달력에서 고른 날짜까지 저장된 훈련 계획으로 하루씩 진행.
+ * 중간에 우리 팀 경기일이 오면 그날 멈춘다 (경기는 직접 치러야 하므로). 시즌 단계가 바뀌어도 멈춤.
+ */
+export async function advanceUntil(pool: Pool, target: string): Promise<{ days: DayResult[]; stoppedAt: string; reason: string }> {
+  const out: DayResult[] = [];
+  for (let i = 0; i < 200; i++) {
+    const f = await getFranchise(pool);
+    if (f.phase === "offseason") return { days: out, stoppedAt: f.date, reason: "비시즌이 시작되었습니다" };
+    if (f.date >= target) return { days: out, stoppedAt: f.date, reason: "선택한 날짜에 도착했습니다" };
+    const ug = await userGameToday(pool, f);
+    if (ug) {
+      const s = await pool.query(`SELECT home_score FROM games WHERE id=$1`, [ug.id]);
+      if (s.rows[0].home_score === null) return { days: out, stoppedAt: f.date, reason: "우리 팀 경기일이라 멈췄습니다" };
+    }
+    const day = await advanceDay(pool);
+    out.push(day);
+    if (day.phase !== f.phase) return { days: out, stoppedAt: day.nextDate, reason: day.events[0] ?? "시즌 단계가 바뀌었습니다" };
+  }
+  const f = await getFranchise(pool);
+  return { days: out, stoppedAt: f.date, reason: "" };
 }
 
 /** 우리 팀 다음 경기일(또는 단계 전환)까지 저장된 훈련 계획으로 하루씩 진행 */

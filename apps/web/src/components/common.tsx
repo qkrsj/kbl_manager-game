@@ -20,6 +20,7 @@ export type View =
   | { name: "training" }
   | { name: "schedule" }
   | { name: "office" }                          // 감독실
+  | { name: "trade" }                           // 트레이드
   | { name: "player"; id: number }
   | { name: "offseason" }
   | { name: "newgame" };
