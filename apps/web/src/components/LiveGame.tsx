@@ -24,12 +24,17 @@ interface Beat {
 interface Play {
   seq: number; quarter: number; clockStart: string; clockEnd: string; offense: Side; beats: Beat[]; points: number;
   homeScore: number; awayScore: number; homeOnCourt: string[]; awayOnCourt: string[]; quarterEnd?: boolean;
+  timeout?: { side: Side; team: string; remaining: number };
 }
 interface LiveState {
   sessionId: string; gameId: number; userSide: Side; nextQuarter: number; segmentsPlayed: number; finished: boolean;
   home: LiveSide; away: LiveSide; quarterInProgress: boolean; plays: Play[]; lastSeq: number;
+  timeouts: { home: number; away: number; rule: string };
+  substitutionWindow: boolean;   // 지금 교체·작전 변경 가능 (작전타임 직후 또는 쿼터 사이)
+  atQuarterBreak: boolean;
   developmentChanges?: DevChange[];
 }
+type PanelMode = "timeout" | "opponent" | "break";
 
 interface FeedLine { key: string; quarter: number; clock: string; text: string; side: Side; scoring: boolean; home: number; away: number; big?: boolean }
 
@@ -41,7 +46,7 @@ const SPEEDS = [1, 2, 4] as const;
 const BEAT_MS: Record<Beat["kind"], number> = {
   bring: 700, pass: 650, shot: 1100, ft: 650, turnover: 900, steal: 900, foul: 800, block: 900, oreb: 800, dreb: 700, info: 900,
 };
-const CHUNK = 3; // 한 번에 받아오는 포제션 수 (작게 해야 작전타임 변경이 바로 반영됨)
+const CHUNK = 1; // 한 포제션씩 받아온다 — 서버 진행 상황이 화면과 같아야 작전타임이 정확히 그 시점에 걸림
 
 // ============================================================
 // 코트 좌표 (전체 코트 940×500, 홈팀은 오른쪽 골대로 공격)
@@ -152,6 +157,11 @@ function Court({ play, beat, homeName, awayName, groups, userSide }: {
   );
 }
 
+/** 남은 작전타임 표시 */
+function TimeoutDots({ n }: { n: number }) {
+  return <span className="to-dots" title={`남은 작전타임 ${n}회`}>{Array.from({ length: n }, (_, i) => <i key={i} />)}{n === 0 && <em>TO 없음</em>}</span>;
+}
+
 function BoxTable({ side }: { side: LiveSide }) {
   return (
     <div className="table-wrap">
@@ -175,8 +185,14 @@ function BoxTable({ side }: { side: LiveSide }) {
 // 작전타임 패널 (전술 + 라인업)
 // ============================================================
 
-function TimeoutPanel({ state, quarter, onApply, onClose, busy }: {
-  state: LiveState; quarter: number; busy: boolean;
+const PANEL_TITLE: Record<PanelMode, string> = {
+  timeout: "⏸ 우리 팀 작전타임",
+  opponent: "상대 작전타임 — 우리도 교체할 수 있습니다",
+  break: "쿼터 사이 — 교체·작전 변경",
+};
+
+function TimeoutPanel({ state, quarter, onApply, onClose, busy, mode }: {
+  state: LiveState; quarter: number; busy: boolean; mode: PanelMode;
   onApply: (body: { lineup?: string[] | null; tactics?: Record<string, unknown> }) => void; onClose: () => void;
 }) {
   const mine = state[state.userSide];
@@ -194,9 +210,13 @@ function TimeoutPanel({ state, quarter, onApply, onClose, busy }: {
   return (
     <div className="timeout">
       <div className="timeout-head">
-        <h3>⏸ 작전타임 — {quarterLabel(quarter)}</h3>
-        <button className="small" onClick={onClose}>닫기</button>
+        <h3>{PANEL_TITLE[mode]} · {quarterLabel(quarter)}</h3>
+        <button className="small" onClick={onClose}>닫기 (변경 없이 계속)</button>
       </div>
+      <p className="small muted" style={{ margin: "4px 0 0" }}>
+        여기서 고른 5명은 바로 코트에 들어가 다음 교체 시점(5분 단위)까지 뛰고, 그 뒤로는 출전시간 설정에 맞춰 자동으로 교체됩니다.
+        작전타임이 아닐 때는 교체할 수 없습니다.
+      </p>
       <div className="timeout-grid">
         <div className="col">
           <b>전술</b>
@@ -262,7 +282,8 @@ export function LiveGameView({ sessionId }: { sessionId: string }) {
   const [paused, setPaused] = useState(true);
   const [banner, setBanner] = useState<string | null>("경기 시작 전 — ▶ 를 누르면 점프볼!");
   const [speed, setSpeed] = useState<(typeof SPEEDS)[number]>(1);
-  const [timeout, setTimeoutOpen] = useState(false);
+  const [panel, setPanel] = useState<PanelMode | null>(null);
+  const [timeoutPending, setTimeoutPending] = useState(false); // 이번 공격이 끝나면 작전타임
   const [busy, setBusy] = useState(false);
   const [tab, setTab] = useState<Side>("home");
   const lastSeq = useRef(0);
@@ -333,8 +354,9 @@ export function LiveGameView({ sessionId }: { sessionId: string }) {
 
   // ---- 재생 루프: 한 동작씩 ----
   useEffect(() => {
-    if (!state || paused || timeout) return;
+    if (!state || paused || panel) return;
     if (!cur) {
+      if (timeoutPending && queue.length === 0) { void requestTimeout(); return; }
       if (queue.length > 0) {
         const [next, ...rest] = queue;
         setQueue(rest);
@@ -359,13 +381,18 @@ export function LiveGameView({ sessionId }: { sessionId: string }) {
         if (p.quarterEnd) {
           pushFeed(p, [], p.beats.length, true);
           setPaused(true);
-          setBanner(`${quarterLabel(p.quarter)} 종료 — 작전타임을 쓰거나 ▶ 로 다음 쿼터를 시작하세요`);
+          setBanner(`${quarterLabel(p.quarter)} 종료 — 쿼터 사이에는 작전타임 없이 교체할 수 있습니다`);
+        } else if (p.timeout && p.timeout.side !== state.userSide) {
+          // 상대 작전타임: 우리 손으로 막을 수 없지만, 이 틈에 우리도 교체 가능
+          setFeed((f) => [{ key: `${p.seq}-to`, quarter: p.quarter, clock: p.clockEnd, text: `⏸ ${p.timeout!.team} 작전타임 (남은 ${p.timeout!.remaining}회)`, side: p.timeout!.side, scoring: false, home: p.homeScore, away: p.awayScore, big: true }, ...f]);
+          setPaused(true);
+          setBanner(`${teamStyle(p.timeout.team).short} 작전타임 — 이 틈에 우리도 선수를 바꿀 수 있습니다`);
         }
         setCur(null);
       }
     }, delay);
     return () => window.clearTimeout(t);
-  }, [state, paused, timeout, cur, queue, speed, step, pushFeed]);
+  }, [state, paused, panel, cur, queue, speed, step, pushFeed, timeoutPending]);
 
   /** 받아둔 포제션을 화면에 즉시 다 반영 (스킵) */
   const flushAll = useCallback((extra: Play[]) => {
@@ -407,12 +434,48 @@ export function LiveGameView({ sessionId }: { sessionId: string }) {
     setBanner(null);
   }
 
+  /** 우리 팀 작전타임: 지금 공격이 끝난 시점에 서버에 요청 (KBL 규정 횟수 확인) */
+  async function requestTimeout() {
+    // 먼저 멈춰야 함 — 그렇지 않으면 재생 루프가 다음 포제션을 받아와서 작전타임 시점이 지나가 버림
+    setPaused(true);
+    fetching.current = true;
+    setTimeoutPending(false);
+    setBusy(true);
+    try {
+      const s = await api<LiveState>(`/api/live/${sessionId}/timeout`, { body: { since: lastSeq.current } });
+      setState(s);
+      const mine = s[s.userSide];
+      const last = shown.play;
+      setFeed((f) => [{ key: `to-${Date.now()}`, quarter: last?.quarter ?? 1, clock: last?.clockEnd ?? "", text: `⏸ ${mine.name} 작전타임 (남은 ${s.timeouts[s.userSide]}회)`, side: s.userSide, scoring: false, home: last?.homeScore ?? 0, away: last?.awayScore ?? 0, big: true }, ...f]);
+      setPaused(true);
+      setBanner(null);
+      setPanel("timeout");
+    } catch (e) {
+      setErr(String((e as Error).message));
+      setPaused(true);
+    } finally {
+      fetching.current = false;
+      setBusy(false);
+    }
+  }
+
+  /** 작전타임 버튼: 경기 중이면 이번 공격이 끝난 뒤, 멈춰 있으면 바로 */
+  function onTimeoutButton() {
+    if (!state) return;
+    setErr(null);
+    if (state.substitutionWindow) { setPaused(true); setPanel(state.atQuarterBreak ? "break" : "opponent"); return; }
+    if (state.timeouts[state.userSide] <= 0) { setErr(`남은 작전타임이 없습니다 (${state.timeouts.rule})`); return; }
+    if (paused && !cur) { void requestTimeout(); return; }
+    setTimeoutPending(true);
+  }
+
   async function applyTimeout(body: { lineup?: string[] | null; tactics?: Record<string, unknown> }) {
     setBusy(true);
     try {
-      const s = await api<LiveState>(`/api/live/${sessionId}/update`, { body: { ...body, since: lastSeq.current } });
+      const changed = body.lineup !== undefined || body.tactics;
+      const s = changed ? await api<LiveState>(`/api/live/${sessionId}/update`, { body: { ...body, since: lastSeq.current } }) : state!;
       setState(s);
-      setTimeoutOpen(false);
+      setPanel(null);
       setPaused(false);
       setBanner(null);
     } catch (e) {
@@ -440,7 +503,7 @@ export function LiveGameView({ sessionId }: { sessionId: string }) {
       <div className="live-board" style={{ ["--home" as string]: hs.primary, ["--away" as string]: as.primary }}>
         <div className="lb-team away">
           <span className="emblem" style={{ width: 42, height: 42, background: as.primary, fontSize: 12 }}>{as.abbr}</span>
-          <div><b>{as.short}</b><small>원정{state.userSide === "away" ? " · 우리 팀" : ""}</small></div>
+          <div><b>{as.short}</b><small>원정{state.userSide === "away" ? " · 우리 팀" : ""}</small><TimeoutDots n={state.timeouts.away} /></div>
           <span className="lb-score">{shown.away}</span>
         </div>
         <div className="lb-mid">
@@ -468,7 +531,7 @@ export function LiveGameView({ sessionId }: { sessionId: string }) {
         </div>
         <div className="lb-team home">
           <span className="lb-score">{shown.home}</span>
-          <div><b>{hs.short}</b><small>홈{state.userSide === "home" ? " · 우리 팀" : ""}</small></div>
+          <div><b>{hs.short}</b><small>홈{state.userSide === "home" ? " · 우리 팀" : ""}</small><TimeoutDots n={state.timeouts.home} /></div>
           <span className="emblem" style={{ width: 42, height: 42, background: hs.primary, fontSize: 12 }}>{hs.abbr}</span>
         </div>
       </div>
@@ -484,7 +547,11 @@ export function LiveGameView({ sessionId }: { sessionId: string }) {
             {!done && (paused
               ? <button className="primary" onClick={() => { setPaused(false); setBanner(null); }} disabled={busy}>▶ {feed.length === 0 ? "점프볼" : "계속"}</button>
               : <button onClick={() => setPaused(true)}>❚❚ 일시정지</button>)}
-            {!done && <button onClick={() => { setPaused(true); setTimeoutOpen(true); }}>⏸ 작전타임</button>}
+            {!done && (state.substitutionWindow
+              ? <button className="timeout-btn ready" onClick={onTimeoutButton}>🔄 {feed.length === 0 ? "선발·작전 정하기" : `교체·작전${state.atQuarterBreak ? " (쿼터 사이)" : " (상대 작전타임)"}`}</button>
+              : <button className={`timeout-btn ${timeoutPending ? "pending" : ""}`} onClick={onTimeoutButton} disabled={busy || timeoutPending || state.timeouts[state.userSide] <= 0}>
+                  ⏸ {timeoutPending ? "이번 공격 후 작전타임…" : `작전타임 (남은 ${state.timeouts[state.userSide]}회)`}
+                </button>)}
             <div className="seg-light">
               {SPEEDS.map((s) => <button key={s} className={speed === s ? "on" : ""} onClick={() => setSpeed(s)}>{s}x</button>)}
             </div>
@@ -493,9 +560,10 @@ export function LiveGameView({ sessionId }: { sessionId: string }) {
             {!done && <button onClick={skipGame} disabled={busy}>⏭ 경기 스킵</button>}
           </div>
           <ErrorBox error={err} />
-          {timeout && !done && (
-            <TimeoutPanel state={state} quarter={state.quarterInProgress ? shown.quarter : state.nextQuarter} busy={busy}
-              onApply={applyTimeout} onClose={() => setTimeoutOpen(false)} />
+          {!done && <p className="small muted" style={{ margin: 0 }}>작전타임 규정: {state.timeouts.rule}. 작전타임·쿼터 사이가 아닐 때는 출전시간에 맞춰 자동으로 교체됩니다.</p>}
+          {panel && !done && (
+            <TimeoutPanel state={state} quarter={state.quarterInProgress ? shown.quarter : state.nextQuarter} busy={busy} mode={panel}
+              onApply={applyTimeout} onClose={() => { setPanel(null); setPaused(false); setBanner(null); }} />
           )}
           {done && (
             <Card title="경기 종료">

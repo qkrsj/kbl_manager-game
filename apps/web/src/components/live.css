@@ -79,3 +79,11 @@
   .lb-quarters { display: none; }
   .live-caption { font-size: 14px; }
 }
+
+/* 작전타임 */
+.to-dots { display: flex; gap: 4px; margin-top: 4px; }
+.lb-team.home .to-dots { justify-content: flex-end; }
+.to-dots i { width: 8px; height: 8px; border-radius: 50%; background: #fbbf24; box-shadow: 0 0 6px rgba(251, 191, 36, 0.6); }
+.to-dots em { font-style: normal; font-size: 10px; color: rgba(255, 255, 255, 0.6); }
+.timeout-btn.pending { border-color: #f59e0b !important; color: #b45309; }
+.timeout-btn.ready { border-color: #16a34a !important; color: #15803d; font-weight: 700; }

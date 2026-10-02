@@ -3,6 +3,9 @@
  *
  * 경기는 포제션(공격 한 번) 단위로 진행되고, 화면은 받은 포제션을 한 동작씩 실시간 중계처럼 재생한다.
  *  - 진행: mode='chunk'(포제션 몇 개씩) | 'quarter'(쿼터 스킵) | 'end'(경기 스킵)
+ *  - 작전타임: KBL(FIBA) 규정 — 전반 2회, 후반 3회(4쿼터 마지막 2분엔 최대 2회), 연장마다 1회.
+ *    유저가 직접 부르고(포제션이 끝난 시점에 적용), 상대 AI도 연속 실점·막판 접전 때 스스로 부른다.
+ *  - 교체·작전 변경은 작전타임(어느 팀이든) 직후나 쿼터 사이에만 가능. 그 밖에는 출전시간에 맞춰 자동 교체.
  *  - 작전타임에 유저가:
  *  - 코트 위 5명 직접 지정 (외국선수 쿼터 규정 검증: 1·4쿼터·연장 1명, 2·3쿼터 2명) 또는 자동 로테이션
  *  - 템포 / 3점 의존도 / 수비 전술(맨투맨·지역방어·압박) / 리바운드 강조 / 상대 더블팀 대상 변경
@@ -10,7 +13,7 @@
  */
 import { Pool } from "pg";
 import { randomUUID } from "crypto";
-import { LiveGame, PlayerBoxScore } from "../../../packages/simulation-engine/gameSimulator";
+import { LiveGame, PlayerBoxScore, TIMEOUT_RULE_TEXT } from "../../../packages/simulation-engine/gameSimulator";
 import { getFranchise, userGameToday, buildContext, persistGameResult, withTx, GameRow } from "./season";
 import { buildTeamSetup, BuildContext } from "./rosterBuilder";
 import { PACE_FACTOR, THREE_MULT, PaceStyle, ThreeReliance, DefenseScheme } from "./coaches";
@@ -69,6 +72,9 @@ function sessionState(s: Session, extra: { developmentChanges?: DevelopmentChang
     home: side("home"),
     away: side("away"),
     log: lg.log.slice(-60),
+    timeouts: { home: lg.timeoutsLeft("home"), away: lg.timeoutsLeft("away"), rule: TIMEOUT_RULE_TEXT },
+    substitutionWindow: lg.substitutionWindow,
+    atQuarterBreak: lg.atQuarterBreak,
     quarterInProgress: lg.quarterInProgress,
     // 화면이 아직 받지 않은 포제션들 (since = 화면이 마지막으로 받은 seq)
     plays: lg.plays.filter((p) => p.seq > (extra.since ?? 0)),
@@ -92,6 +98,7 @@ export async function startLiveGame(pool: Pool, gameId: number) {
     id: randomUUID(), game: g, live: new LiveGame(home, away),
     userSide: g.home_team_id === f.userTeamId ? "home" : "away", ctx, createdAt: Date.now(),
   };
+  session.live.aiTimeoutSide = session.userSide === "home" ? "away" : "home"; // 상대 팀은 AI가 작전타임을 부름
   sessions.set(session.id, session);
   return sessionState(session);
 }
@@ -103,6 +110,9 @@ export function getLiveGame(sessionId: string, since = 0) {
 }
 
 function applyChanges(s: Session, body: { lineup?: string[] | null; tactics?: TacticsPatch }) {
+  if ((body.lineup !== undefined || body.tactics) && !s.live.substitutionWindow) {
+    throw new Error("선수 교체와 작전 변경은 작전타임이나 쿼터 사이에만 할 수 있습니다");
+  }
   if (body.lineup !== undefined) {
     const err = s.live.setManualLineup(s.userSide, body.lineup);
     if (err) throw new Error(err);
@@ -120,6 +130,15 @@ function applyChanges(s: Session, body: { lineup?: string[] | null; tactics?: Ta
       paceFactor: t.paceStyle ? PACE_FACTOR[t.paceStyle] : undefined,
     });
   }
+}
+
+/** 우리 팀 작전타임 (KBL 규정 횟수 안에서). 이후 교체·작전 변경 가능 */
+export function callLiveTimeout(sessionId: string, since?: number) {
+  const s = sessions.get(sessionId);
+  if (!s) throw new Error("경기 세션을 찾을 수 없습니다");
+  const err = s.live.callTimeout(s.userSide);
+  if (err) throw new Error(err);
+  return sessionState(s, { since: since ?? s.live.plays.length });
 }
 
 /** 작전 변경만 하고 진행하지 않음 */
@@ -154,7 +173,7 @@ export async function stepLiveGame(
     s.live.playSegment();
   } else {
     // 실시간 중계용: 포제션 몇 개씩 (쿼터가 끝나면 거기서 멈춤)
-    const n = Math.max(1, Math.min(20, body.count ?? 6));
+    const n = Math.max(1, Math.min(20, body.count ?? 1));
     for (let i = 0; i < n && !s.live.finished; i++) {
       const play = s.live.playPossession();
       if (play?.quarterEnd) break;

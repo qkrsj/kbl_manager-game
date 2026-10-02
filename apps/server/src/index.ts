@@ -9,7 +9,7 @@ import cors from "cors";
 import { pool } from "./db";
 import { getFranchise, advanceDay, advanceToNextGameDay, advanceUntil, quickSimUserGame, userGameToday } from "./season";
 import { tradeContext, evaluateTrade, proposeTrade, suggestPackages, tradeHistory } from "./trades";
-import { startLiveGame, getLiveGame, updateLiveGame, stepLiveGame } from "./liveGames";
+import { startLiveGame, getLiveGame, updateLiveGame, stepLiveGame, callLiveTimeout } from "./liveGames";
 import { loadLeaguePlayers, coachForTeam, ageOn, autoOffenseOptions } from "./rosterBuilder";
 import { aiMinutesPlan } from "./coaches";
 import { teamPayroll, DOMESTIC_CAP, SOFT_CAP_LIMIT, MIN_CAP_RATIO, FOREIGN_TOTAL_CAP_USD, ASIA_CAP_USD, MAX_DOMESTIC_ROSTER, MIN_SALARY } from "./salaryCap";
@@ -712,6 +712,7 @@ app.post("/api/franchise/games/:id/quick-sim", route(async (req) => quickSimUser
 app.post("/api/franchise/games/:id/live", route(async (req) => startLiveGame(pool, Number(req.params.id))));
 app.get("/api/live/:sid", route(async (req) => getLiveGame(String(req.params.sid), Number(req.query.since ?? 0))));
 app.post("/api/live/:sid/update", route(async (req) => updateLiveGame(String(req.params.sid), req.body ?? {})));
+app.post("/api/live/:sid/timeout", route(async (req) => callLiveTimeout(String(req.params.sid), req.body?.since)));
 app.post("/api/live/:sid/step", route(async (req) => stepLiveGame(pool, String(req.params.sid), req.body ?? {})));
 
 app.get("/api/franchise/playoffs", route(async () => {

@@ -101,7 +101,16 @@ export interface PossessionPlay {
   homeOnCourt: string[];
   awayOnCourt: string[];
   quarterEnd?: boolean;        // 이 포제션으로 쿼터(연장)가 끝남
+  timeout?: { side: "home" | "away"; team: string; remaining: number }; // 이 포제션 뒤에 부른 작전타임
 }
+
+/**
+ * 작전타임 규정 (KBL = FIBA 규칙)
+ *  - 전반(1·2쿼터) 2회, 후반(3·4쿼터) 3회, 연장은 매 연장마다 1회
+ *  - 4쿼터 마지막 2분 동안은 후반 작전타임 중 최대 2회까지만
+ *  - 쓰지 않은 작전타임은 다음 반·연장으로 넘어가지 않음
+ */
+export const TIMEOUT_RULE_TEXT = "전반 2회 · 후반 3회(4쿼터 마지막 2분엔 최대 2회) · 연장마다 1회, 남은 횟수는 이월 안 됨";
 
 interface SegmentState {
   quarter: number;
@@ -122,6 +131,8 @@ interface LiveTeam {
   minutes: Map<string, number>;
   onCourt: SimPlayer[];
   manualLineup: string[] | null;
+  manualUntilSegment: number;          // 직접 지정한 라인업은 이 구간까지만 유지 (이후엔 출전시간에 맞춰 자동 교체)
+  timeoutsUsed: { quarter: number; secondsLeft: number }[];
 }
 
 const SHOT_LABEL: Record<ShotType, string> = { paint: "골밑슛", mid: "미드레인지 점퍼", three: "3점슛" };
@@ -310,6 +321,11 @@ export class LiveGame {
   plays: PossessionPlay[] = [];
   finished = false;
   private seg: SegmentState | null = null;
+  /** 작전타임을 스스로 부르는 AI 팀 (유저가 지휘하는 경기에서 상대 팀). null이면 아무도 안 부름 */
+  aiTimeoutSide: "home" | "away" | null = null;
+  /** 작전타임 직후 — 다음 포제션 전까지 교체·작전 변경 가능 */
+  private timeoutWindow = false;
+  private runAgainst = { home: 0, away: 0 }; // 상대에게 연속으로 내준 점수
 
   constructor(home: TeamGameSetup, away: TeamGameSetup) {
     this.home = this.initTeam(home);
@@ -325,7 +341,7 @@ export class LiveGame {
       energy.set(p.name, setup.startingEnergy?.[p.name] ?? 100);
       minutes.set(p.name, 0);
     });
-    return { setup, box, energy, minutes, onCourt: [], manualLineup: null };
+    return { setup, box, energy, minutes, onCourt: [], manualLineup: null, manualUntilSegment: -1, timeoutsUsed: [] };
   }
 
   /** 다음에 진행할 구간의 쿼터 번호 (5 이상 = 연장) */
@@ -346,7 +362,10 @@ export class LiveGame {
     return t.setup.roster.filter((p) => (t.box.players.get(p.name)?.PF ?? 0) < FOUL_OUT_LIMIT);
   }
 
-  /** 유저 지정 라인업 (null이면 자동 로테이션). 다음 구간부터 적용, 해제 전까지 유지 */
+  /**
+   * 유저 지정 라인업 (null이면 자동 로테이션). 작전타임·쿼터 사이에만 바꿀 수 있고,
+   * 지정한 5명은 이번 교체 구간(5분 단위)이 끝날 때까지 뛰고 그다음부터는 출전시간에 맞춰 자동 교체된다.
+   */
   setManualLineup(side: "home" | "away", names: string[] | null): string | null {
     const t = this.team(side);
     if (names === null) {
@@ -358,7 +377,77 @@ export class LiveGame {
     const err = validateManualLineup(players as SimPlayer[], this.quarter);
     if (err) return err;
     t.manualLineup = names;
+    t.manualUntilSegment = this.segmentIndex;
     return null;
+  }
+
+  /** 지금 이 순간(다음 포제션 시작 전)의 쿼터와 남은 시간(초) */
+  private now(): { quarter: number; secondsLeft: number } {
+    if (this.seg) {
+      const total = this.seg.possessions * 2;
+      return { quarter: this.seg.quarter, secondsLeft: this.seg.quarterSeconds - (this.seg.segInQuarter * 300 + (this.seg.i / total) * 300) };
+    }
+    const q = this.quarter;
+    return { quarter: q, secondsLeft: q >= 5 ? 300 : this.segmentIndex % 2 === 1 ? 300 : 600 };
+  }
+
+  /** 남은 작전타임 (지금 시점 기준) */
+  timeoutsLeft(side: "home" | "away"): number {
+    const t = this.team(side);
+    const { quarter, secondsLeft } = this.now();
+    if (quarter >= 5) return Math.max(0, 1 - t.timeoutsUsed.filter((u) => u.quarter === quarter).length);
+    const half = quarter <= 2 ? [1, 2] : [3, 4];
+    let left = (quarter <= 2 ? 2 : 3) - t.timeoutsUsed.filter((u) => half.includes(u.quarter)).length;
+    if (quarter === 4 && secondsLeft <= 120) {
+      const lastTwo = t.timeoutsUsed.filter((u) => u.quarter === 4 && u.secondsLeft <= 120).length;
+      left = Math.min(left, 2 - lastTwo);
+    }
+    return Math.max(0, left);
+  }
+
+  /** 쿼터 사이(쿼터 시작 전)인지 — 이때는 작전타임 없이 교체 가능 */
+  get atQuarterBreak(): boolean {
+    if (this.finished || this.seg) return false;
+    return this.segmentIndex >= REGULATION_SEGMENTS || this.segmentIndex % 2 === 0;
+  }
+
+  /** 교체·작전 변경이 가능한 순간: 작전타임 직후(어느 팀이든) 또는 쿼터 사이 */
+  get substitutionWindow(): boolean {
+    return !this.finished && (this.timeoutWindow || this.atQuarterBreak);
+  }
+
+  /** 작전타임 요청. 성공하면 null, 못 부르면 사유 */
+  callTimeout(side: "home" | "away"): string | null {
+    if (this.finished) return "경기가 끝났습니다";
+    if (this.atQuarterBreak) return "쿼터 사이에는 작전타임 없이 바로 교체할 수 있습니다";
+    if (this.timeoutWindow) return "이미 작전타임 중입니다 — 지금 교체·작전을 바꿀 수 있습니다";
+    if (this.timeoutsLeft(side) <= 0) return `남은 작전타임이 없습니다 (${TIMEOUT_RULE_TEXT})`;
+    const t = this.team(side);
+    const at = this.now();
+    t.timeoutsUsed.push({ quarter: at.quarter, secondsLeft: at.secondsLeft });
+    // 작전타임 동안 코트 위 선수들이 숨을 돌림
+    for (const team of [this.home, this.away]) team.onCourt.forEach((p) => team.energy.set(p.name, Math.min(100, (team.energy.get(p.name) ?? 100) + 3)));
+    this.timeoutWindow = true;
+    this.runAgainst[side] = 0;
+    const last = this.plays[this.plays.length - 1];
+    if (last && !last.timeout) last.timeout = { side, team: t.setup.name, remaining: this.timeoutsLeft(side) };
+    this.log.push({
+      quarter: at.quarter, clock: formatClock(at.secondsLeft), team: t.setup.name, text: `${t.setup.name} 작전타임`,
+      homeScore: this.home.box.totalScore, awayScore: this.away.box.totalScore, scoring: false,
+    });
+    return null;
+  }
+
+  /** AI 팀 작전타임 판단: 상대에게 연속 8점 이상 내줬거나, 4쿼터 막판 접전에서 상대가 득점했을 때 */
+  private maybeAiTimeout(play: PossessionPlay) {
+    const side = this.aiTimeoutSide;
+    if (!side || play.quarterEnd || this.finished || play.points === 0 || play.offense === side) return;
+    if (this.timeoutsLeft(side) <= 0) return;
+    const { quarter, secondsLeft } = this.now();
+    const margin = Math.abs(this.home.box.totalScore - this.away.box.totalScore);
+    const run = this.runAgainst[side] >= 8 && Math.random() < 0.75;
+    const clutch = quarter >= 4 && secondsLeft <= 120 && margin <= 4 && Math.random() < 0.35;
+    if (run || clutch) this.callTimeout(side);
   }
 
   updateSetup(side: "home" | "away", patch: Partial<Pick<TeamGameSetup, "context" | "paceFactor">> & { roster?: SimPlayer[] }) {
@@ -374,6 +463,7 @@ export class LiveGame {
 
   private pickLineup(t: LiveTeam, closing: boolean): SimPlayer[] {
     const avail = this.available(t);
+    if (t.manualLineup && this.segmentIndex > t.manualUntilSegment) t.manualLineup = null; // 지정 구간이 지나면 자동 교체로
     if (t.manualLineup) {
       const manual = t.manualLineup.map((n) => avail.find((p) => p.name === n)).filter((p): p is SimPlayer => !!p);
       if (manual.length === 5 && !validateManualLineup(manual, this.quarter)) return manual;
@@ -441,17 +531,18 @@ export class LiveGame {
     };
   }
 
-  /** 작전타임 교체: 구간 진행 중이면 지정 라인업을 바로 코트에 투입 */
+  /** 작전타임 교체: 구간 진행 중이면 지정 라인업을 바로 코트에 투입 (해제하면 출전시간 기준 자동 라인업으로) */
   substituteNow(side: "home" | "away") {
     if (!this.seg) return;
     const t = this.team(side);
-    if (t.manualLineup) t.onCourt = this.pickLineup(t, false);
+    t.onCourt = this.pickLineup(t, false);
   }
 
   /** 포제션 하나 진행 (구간 시작/정산은 자동). 진행한 포제션을 돌려준다 */
   playPossession(): PossessionPlay | null {
     if (this.finished) return null;
     if (!this.seg) this.startSegment();
+    this.timeoutWindow = false;
     const seg = this.seg!;
     const quarter = seg.quarter;
     const total = seg.possessions * 2;
@@ -487,12 +578,21 @@ export class LiveGame {
     this.replaceFouledOut(this.home);
     this.replaceFouledOut(this.away);
 
+    // 연속 실점 집계 (AI 작전타임 판단용)
+    if (result.points > 0) {
+      const scorer: "home" | "away" = homeOff ? "home" : "away";
+      const victim: "home" | "away" = homeOff ? "away" : "home";
+      this.runAgainst[scorer] = 0;
+      this.runAgainst[victim] += result.points;
+    }
+
     seg.i++;
     if (seg.i >= total) {
       const quarterBefore = this.quarter;
       this.finishSegment();
       if (this.finished || this.quarter !== quarterBefore) play.quarterEnd = true;
     }
+    this.maybeAiTimeout(play);
     return play;
   }
 
