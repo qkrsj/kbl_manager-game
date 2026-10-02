@@ -45,15 +45,26 @@ export interface LeaguePlayer {
  * 주전급(예상 출전 18분 이상) 중 공격 능력치 + 실제 득점 퍼센타일이 높은 순.
  */
 export function autoOffenseOptions(
-  members: { id: number; ratings: Ratings; sim: { internals: { ptsPercentile: number } } }[],
-  plannedMinutes: (id: number) => number
+  members: { id: number; isForeign: boolean; ratings: Ratings; sim: { internals: { ptsPercentile: number } } }[],
+  plannedMinutes: (id: number) => number,
+  opts: { foreignAce?: boolean } = {}
 ): Map<number, 1 | 2 | 3> {
   const pool = members.filter((p) => plannedMinutes(p.id) >= 18);
-  const ranked = (pool.length >= 3 ? pool : members)
+  const out = new Map<number, 1 | 2 | 3>();
+  // AI 팀: 1옵션은 무조건 오버롤이 가장 높은 외국선수 (이 경기에 뛰는 선수 중)
+  if (opts.foreignAce) {
+    const ace = members
+      .filter((p) => p.isForeign && plannedMinutes(p.id) > 0)
+      .sort((a, b) => b.ratings.overall - a.ratings.overall || b.ratings.offense - a.ratings.offense)[0];
+    if (ace) out.set(ace.id, 1);
+  }
+  const rest = (pool.length >= 3 ? pool : members).filter((p) => !out.has(p.id));
+  rest
     .map((p) => ({ id: p.id, score: p.ratings.offense + 0.15 * p.sim.internals.ptsPercentile }))
     .sort((a, b) => b.score - a.score)
-    .slice(0, 3);
-  return new Map(ranked.map((r, i) => [r.id, (i + 1) as 1 | 2 | 3]));
+    .slice(0, 3 - out.size)
+    .forEach((r) => out.set(r.id, (out.size + 1) as 1 | 2 | 3));
+  return out;
 }
 
 export function ageOn(birthDate: string | Date | null, onDate: string): number {
@@ -258,8 +269,8 @@ export async function buildTeamSetup(ctx: BuildContext, teamId: number, opponent
   } else {
     const plan = aiMinutesPlan(members.map((p) => ({ name: p.name, isForeign: p.isForeign, overall: p.ratings.overall, age: p.age, fatigue: p.fatigue })), coach);
     const closer = [...members].sort((a, b) => b.sim.internals.ptsPercentile - a.sim.internals.ptsPercentile)[0];
-    // AI 팀 공격 옵션: 공격 능력치·득점력 순 상위 3명 (감독 뎁스차트상 주전급 중에서)
-    const options = autoOffenseOptions(members, (id) => plan.get(members.find((p) => p.id === id)!.name) ?? 0);
+    // AI 팀 공격 옵션: 1옵션은 오버롤 최고 외국선수, 2·3옵션은 공격 능력치·득점력 순 (감독 뎁스차트상 주전급 중에서)
+    const options = autoOffenseOptions(members, (id) => plan.get(members.find((p) => p.id === id)!.name) ?? 0, { foreignAce: true });
     roster = members.map((p) => ({ ...p.sim, perGameMin: plan.get(p.name) ?? 0, tactics: { isClutchCloser: p === closer, offenseOption: options.get(p.id) } }));
     const threats = await opponentThreats(ctx.db, opponentId, ctx.seasonId);
     paceFactor = PACE_FACTOR[coach.paceStyle];
