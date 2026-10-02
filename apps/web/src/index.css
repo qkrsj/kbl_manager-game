@@ -103,6 +103,7 @@ input[type="number"] { width: 90px; }
 .pill.gray { background: var(--panel-2); color: var(--muted); border: 1px solid var(--border); }
 .pill.red { background: #fee2e2; color: #b91c1c; }
 .pill.green { background: #dcfce7; color: #15803d; }
+.pill.orange { background: #ffedd5; color: #c2410c; }
 .error { background: #fee2e2; color: #991b1b; padding: 8px 12px; border-radius: 6px; margin: 8px 0; }
 .notice { background: var(--accent-soft); color: var(--text); padding: 8px 12px; border-radius: 6px; margin: 8px 0; }
 

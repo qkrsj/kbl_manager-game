@@ -17,7 +17,7 @@ import { teamPayroll, DOMESTIC_CAP, SOFT_CAP_LIMIT, MIN_CAP_RATIO, FOREIGN_TOTAL
 import { TRAINING_FOCUS, XP_PER_LEVEL, loadTrainingPlan, dailyGrowthRate } from "./development";
 import { playoffBracket, ROUND_LABEL } from "./playoffs";
 import {
-  offseasonOverview, offerNegotiation, freeAgentList, makeFaOffer, withdrawFaOffer, releasePlayer,
+  offseasonOverview, offerNegotiation, requestArbitration, freeAgentList, makeFaOffer, withdrawFaOffer, releasePlayer,
   advanceOffseason, startNewSeason,
 } from "./offseason";
 import { seedDatabase, availableTeams } from "./seed";
@@ -767,6 +767,7 @@ app.get("/api/transactions", route(async () => {
 app.get("/api/offseason", route(async () => offseasonOverview(pool)));
 app.post("/api/offseason/negotiations/:id/offer", route(async (req) =>
   offerNegotiation(pool, Number(req.params.id), Number(req.body.amount), Number(req.body.years ?? 1))));
+app.post("/api/offseason/negotiations/:id/arbitration", route(async (req) => requestArbitration(pool, Number(req.params.id))));
 app.get("/api/offseason/free-agents", route(async () => freeAgentList(pool)));
 app.post("/api/offseason/free-agents/:id/offer", route(async (req) =>
   makeFaOffer(pool, Number(req.params.id), Number(req.body.amount), Number(req.body.years ?? 1))));

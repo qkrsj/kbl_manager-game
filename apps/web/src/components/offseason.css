@@ -1,0 +1,27 @@
+/* 비시즌 — 연봉협상 · 보수 조정 */
+.neg-guide { background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; padding: 8px 12px; margin-bottom: 10px; }
+.neg-guide p { margin: 4px 0; line-height: 1.5; }
+.neg-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.neg-msg { white-space: normal; max-width: 460px; margin-top: 3px; }
+.neg-row.accepted td { background: color-mix(in srgb, var(--good) 6%, transparent); }
+.neg-row.arbitration td { background: color-mix(in srgb, var(--warn) 7%, transparent); }
+.neg-detail td { background: var(--panel-2); }
+.neg-history { display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; }
+.nh { display: flex; gap: 10px; align-items: center; font-size: 12px; }
+.nh-round { width: 32px; color: var(--muted); font-weight: 700; }
+
+.ruling { border: 2px solid var(--border); border-radius: 12px; padding: 12px 14px; background: var(--panel); max-width: 760px; }
+.ruling.player { border-color: color-mix(in srgb, var(--bad) 45%, var(--border)); }
+.ruling.team { border-color: color-mix(in srgb, var(--good) 45%, var(--border)); }
+.ruling-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-weight: 700; }
+.ruling-head b { font-size: 20px; }
+.ruling-summary { font-weight: 700; margin: 8px 0 4px; }
+.ruling-reasons { margin: 4px 0 8px; padding-left: 18px; font-size: 12.5px; line-height: 1.55; }
+.ruling-comps { font-size: 12px; }
+.ruling-scale { margin: 10px 4px 2px; }
+.rs-track { position: relative; height: 8px; border-radius: 999px; background: linear-gradient(90deg, color-mix(in srgb, var(--good) 45%, transparent), color-mix(in srgb, var(--bad) 45%, transparent)); }
+.rs-track i { position: absolute; top: 50%; transform: translate(-50%, -50%); border-radius: 50%; }
+.rs-mark { width: 10px; height: 10px; background: var(--panel); border: 2px solid var(--muted); }
+.rs-record { width: 12px; height: 12px; background: var(--accent); border: 2px solid var(--panel); }
+.rs-final { width: 18px; height: 18px; background: #fbbf24; border: 3px solid var(--panel); box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3); }
+.rs-labels { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); margin-top: 6px; }

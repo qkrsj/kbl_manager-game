@@ -1,16 +1,27 @@
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { useApi, Loading, ErrorBox, Card, Rating, PlayerLink, Bar, useApp } from "./common";
 import { api, krw, usd, CONTRACT_TYPE_LABEL } from "../api";
+import "./offseason.css";
 import type { Payroll } from "../api";
 
 interface Negotiation {
   id: number; kind: "salary" | "fa_resign" | "foreign_resign"; asking_amount: number; asking_years: number; last_offer: number | null;
   last_offer_years: number | null; rounds: number; status: string; fair_value: number; message: string | null;
   player_id: number; name: string; position_group: string; age: number; contract_type: string; salary_krw: number | null; salary_usd: number | null;
+  history: { round: number; offer?: number; ask: number; mood?: string }[] | null;
+  mood: string | null;
+  ruling: Ruling | null;
+}
+
+interface Ruling {
+  amount: number; side: "player" | "team" | "middle"; recordValue: number; playerAsk: number; teamOffer: number; current: number;
+  stats: { games: number; mpg: number; ppg: number; rpg: number; apg: number; eff: number; pct: number };
+  comps: { name: string; team: string | null; salary: number; ppg: number; rpg: number; apg: number; games: number }[];
+  reasons: string[]; summary: string;
 }
 
 interface Overview {
-  stage: string | null; faDay: number; faDays: number; endYear: number; payroll: Payroll;
+  stage: string | null; faDay: number; faDays: number; endYear: number; payroll: Payroll; maxRounds: number;
   negotiations: Negotiation[];
   transactions: { kind: string; description: string; team_name: string | null }[];
 }
@@ -23,7 +34,7 @@ interface FreeAgent {
 }
 
 const KIND_LABEL = { salary: "연봉협상", fa_resign: "FA 재계약", foreign_resign: "외국선수 재계약" };
-const STATUS_LABEL: Record<string, string> = { open: "협상 중", accepted: "계약 완료", declined: "결렬", arbitration: "보수 조정" };
+const STATUS_LABEL: Record<string, string> = { open: "협상 중", accepted: "계약 완료", declined: "결렬", arbitration: "보수 조정 판결" };
 
 const money = (type: string, v: number | null) => (type === "domestic" ? krw(v) : usd(v));
 
@@ -42,43 +53,122 @@ function PayrollBar({ payroll }: { payroll: Payroll }) {
   );
 }
 
-function NegotiationRow({ n, onDone }: { n: Negotiation; onDone: () => void }) {
-  const [amount, setAmount] = useState<number>(n.asking_amount);
-  const [years, setYears] = useState<number>(n.asking_years);
-  const [reply, setReply] = useState<string | null>(null);
-  const [err, setErr] = useState<string | null>(null);
+const MOOD_CLASS: Record<string, string> = { 만족: "green", 타협: "green", "거의 합의": "green", "좁혀지는 중": "orange", "격차 큼": "red", 불쾌: "red", 결렬: "red" };
+
+/** 보수 조정 판결문 */
+function RulingCard({ r }: { r: Ruling }) {
+  const sideLabel = r.side === "player" ? "선수 측 승" : r.side === "team" ? "구단 측 승" : "절충";
+  const lo = Math.min(r.teamOffer, r.playerAsk), hi = Math.max(r.teamOffer, r.playerAsk);
+  const pos = (v: number) => (hi > lo ? Math.max(0, Math.min(100, ((v - lo) / (hi - lo)) * 100)) : 50);
+  return (
+    <div className={`ruling ${r.side}`}>
+      <div className="ruling-head">
+        <span>⚖️ KBL 재정위원회 보수 조정 판결</span>
+        <b>{krw(r.amount)}</b>
+        <span className={`pill ${r.side === "team" ? "green" : r.side === "player" ? "red" : "gray"}`}>{sideLabel}</span>
+      </div>
+      <div className="ruling-scale">
+        <div className="rs-track">
+          <i className="rs-mark team" style={{ left: "0%" }} />
+          <i className="rs-mark player" style={{ left: "100%" }} />
+          <i className="rs-record" style={{ left: `${pos(r.recordValue)}%` }} title="기록으로 본 적정 보수" />
+          <i className="rs-final" style={{ left: `${pos(r.amount)}%` }} />
+        </div>
+        <div className="rs-labels"><span>구단 제시 {krw(r.teamOffer)}</span><span>기록 가치 {krw(r.recordValue)}</span><span>선수 요구 {krw(r.playerAsk)}</span></div>
+      </div>
+      <p className="ruling-summary">{r.summary}</p>
+      <ul className="ruling-reasons">{r.reasons.map((x, i) => <li key={i}>{x}</li>)}</ul>
+      {r.comps.length > 0 && (
+        <table className="ruling-comps">
+          <thead><tr><th>비교 선수 (기록 비슷)</th><th className="num">경기</th><th className="num">득점</th><th className="num">리바</th><th className="num">어시</th><th className="num">보수</th></tr></thead>
+          <tbody>{r.comps.map((c) => (
+            <tr key={c.name}><td>{c.name} <span className="muted small">{c.team ?? ""}</span></td><td className="num">{c.games}</td><td className="num">{c.ppg.toFixed(1)}</td><td className="num">{c.rpg.toFixed(1)}</td><td className="num">{c.apg.toFixed(1)}</td><td className="num">{krw(c.salary)}</td></tr>
+          ))}</tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
+function NegotiationRow({ n, maxRounds, onDone }: { n: Negotiation; maxRounds: number; onDone: () => void }) {
   const isKrw = n.contract_type === "domestic";
-  async function offer() {
-    setErr(null);
+  const current = isKrw ? n.salary_krw : n.salary_usd;
+  // 첫 제시 기본값: 현재 보수 (이후엔 지난 제시액)
+  const [amount, setAmount] = useState<number>(() => n.last_offer ?? current ?? n.asking_amount);
+  const [years, setYears] = useState<number>(n.asking_years);
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [open, setOpen] = useState(false);
+  async function call(path: string, body: Record<string, unknown>) {
+    setErr(null); setBusy(true);
     try {
-      const r = await api<{ message: string }>(`/api/offseason/negotiations/${n.id}/offer`, { body: { amount, years } });
-      setReply(r.message);
+      await api(path, { body });
       onDone();
     } catch (e) {
       setErr(String((e as Error).message));
+    } finally {
+      setBusy(false);
     }
   }
-  const current = isKrw ? n.salary_krw : n.salary_usd;
+  const history = (n.history ?? []).filter((h) => h.round > 0);
+  const step = isKrw ? 100 : 10000;
+  const change = current ? (n.asking_amount - current) / current : 0;
   return (
-    <tr>
-      <td><PlayerLink id={n.player_id} name={n.name} /> <span className="muted small">{n.position_group} · {n.age}세</span></td>
-      <td><span className="pill gray">{KIND_LABEL[n.kind]}</span></td>
-      <td>{money(n.contract_type, current)}</td>
-      <td><b>{money(n.contract_type, n.asking_amount)}</b>{n.kind === "fa_resign" ? ` · ${n.asking_years}년` : ""}</td>
-      <td className="muted small">{money(n.contract_type, n.fair_value)}</td>
-      <td>
-        {n.status === "open" ? (
-          <div className="row" style={{ gap: 4 }}>
-            <input type="number" step={isKrw ? 100 : 10000} value={amount} onChange={(e) => setAmount(Number(e.target.value))} style={{ width: 110 }} />
-            <span className="small muted">{isKrw ? "만원" : "$"}</span>
-            {n.kind === "fa_resign" && <select value={years} onChange={(e) => setYears(Number(e.target.value))}>{[1, 2, 3, 4, 5].map((y) => <option key={y} value={y}>{y}년</option>)}</select>}
-            <button className="small primary" onClick={offer}>제시 ({n.rounds}/4)</button>
-          </div>
-        ) : <span className={n.status === "accepted" ? "good" : "warn"}>{STATUS_LABEL[n.status]}</span>}
-        {err && <div className="bad small">{err}</div>}
-        <div className="small muted" style={{ whiteSpace: "normal", maxWidth: 380 }}>{reply ?? n.message}</div>
-      </td>
-    </tr>
+    <Fragment>
+      <tr className={`neg-row ${n.status}`}>
+        <td><PlayerLink id={n.player_id} name={n.name} /> <span className="muted small">{n.position_group} · {n.age}세</span></td>
+        <td><span className="pill gray">{KIND_LABEL[n.kind]}</span></td>
+        <td>{money(n.contract_type, current)}</td>
+        <td>
+          <b>{money(n.contract_type, n.asking_amount)}</b>{n.kind === "fa_resign" ? ` · ${n.asking_years}년` : ""}
+          {current ? <small className={change > 0.02 ? "bad" : change < -0.02 ? "good" : "muted"}> ({change >= 0 ? "+" : ""}{Math.round(change * 100)}%)</small> : null}
+        </td>
+        <td className="muted small">{money(n.contract_type, n.fair_value)}</td>
+        <td>
+          {n.status === "open" ? (
+            <div className="neg-actions">
+              <div className="row" style={{ gap: 4 }}>
+                <button className="small" onClick={() => setAmount(Math.max(step, amount - step * (isKrw ? 5 : 1)))}>−</button>
+                <input type="number" step={step} value={amount} onChange={(e) => setAmount(Number(e.target.value))} style={{ width: 104 }} />
+                <button className="small" onClick={() => setAmount(amount + step * (isKrw ? 5 : 1))}>+</button>
+                <span className="small muted">{isKrw ? "만원" : "$"}</span>
+                {n.kind === "fa_resign" && <select value={years} onChange={(e) => setYears(Number(e.target.value))}>{[1, 2, 3, 4, 5].map((y) => <option key={y} value={y}>{y}년</option>)}</select>}
+                <button className="small primary" disabled={busy} onClick={() => call(`/api/offseason/negotiations/${n.id}/offer`, { amount, years })}>제시 ({n.rounds}/{maxRounds})</button>
+                {n.kind === "salary" && n.last_offer !== null && (
+                  <button className="small" disabled={busy} title="마지막 제시액과 선수 요구액 사이에서 재정위원회가 기록을 보고 결정" onClick={() => { if (confirm("재정위원회에 보수 조정을 신청할까요? 판결은 되돌릴 수 없습니다.")) call(`/api/offseason/negotiations/${n.id}/arbitration`, {}); }}>⚖️ 조정 신청</button>
+                )}
+              </div>
+              {n.mood && <span className={`pill ${MOOD_CLASS[n.mood] ?? "gray"}`}>{n.mood}</span>}
+            </div>
+          ) : (
+            <span className={n.status === "accepted" ? "good" : "warn"}>
+              {STATUS_LABEL[n.status]}{n.status === "arbitration" && n.ruling ? ` · ${krw(n.ruling.amount)}` : n.status === "accepted" && n.last_offer ? ` · ${money(n.contract_type, n.last_offer)}` : ""}
+            </span>
+          )}
+          {err && <div className="bad small">{err}</div>}
+          <div className="small muted neg-msg">{n.message}</div>
+          {(history.length > 0 || n.ruling) && <a className="small" onClick={() => setOpen(!open)}>{open ? "접기" : n.ruling ? "판결문 · 협상 기록 보기" : `협상 기록 (${history.length})`}</a>}
+        </td>
+      </tr>
+      {open && (
+        <tr className="neg-detail"><td colSpan={6}>
+          {history.length > 0 && (
+            <div className="neg-history">
+              {history.map((h) => (
+                <div key={h.round} className="nh">
+                  <span className="nh-round">{h.round}차</span>
+                  <span>구단 <b>{money(n.contract_type, h.offer ?? null)}</b></span>
+                  <span className="muted">→</span>
+                  <span>선수 <b>{money(n.contract_type, h.ask)}</b></span>
+                  {h.mood && <span className={`pill ${MOOD_CLASS[h.mood] ?? "gray"}`}>{h.mood}</span>}
+                </div>
+              ))}
+            </div>
+          )}
+          {n.ruling && <RulingCard r={n.ruling} />}
+        </td></tr>
+      )}
+    </Fragment>
   );
 }
 
@@ -201,14 +291,16 @@ export function OffseasonView() {
 
       {data.stage === "resign" && (
         <Card title="연봉협상 · 재계약" right={<button className="primary" disabled={busy} onClick={advance}>협상 마감 → FA 시장 개장</button>}>
-          <p className="small muted">
-            계약기간이 남은 국내선수는 매년 보수를 재협상합니다. 4번 안에 합의하지 못하면 KBL 재정위원회 보수 조정으로 넘어가 선수 요구액과 구단 제시액 중 공정가치에 가까운 쪽으로 결정됩니다.
-            계약이 끝난 FA는 원소속 구단과 먼저 협상하고, 결렬되면 FA 시장에 나갑니다. 재계약은 샐러리캡의 105%(31.5억)까지 허용됩니다.
-          </p>
+          <div className="neg-guide small">
+            <p><b>연봉협상</b> — 계약기간이 남은 국내선수는 매년 보수를 다시 정합니다. 요구액은 <b>지난 시즌 기록</b>(출전·효율, 기록이 비슷한 선수들의 보수)을 기준으로 하고, 기록 상위권일수록 인상 폭이 큽니다.</p>
+            <p><b>서로 양보</b> — 금액을 제시하면 선수도 매번 요구액을 낮춥니다. 협상이 길어질수록, 제시가 합리적일수록 많이 양보하고 중간 어딘가에서 사인합니다. 지난번보다 깎은 제시나 헐값 제시엔 거의 물러서지 않습니다.</p>
+            <p><b>보수 조정</b> — {data.maxRounds ?? 5}번 안에 합의하지 못하거나 <b>⚖️ 조정 신청</b>을 누르면 FA 시장 개장 전에 KBL 재정위원회가 <b>선수 요구액과 구단 제시액 사이에서 선수 기록을 보고</b> 금액을 판결합니다. 제시 없이 협상을 마감하면 현재 보수를 구단 제시액으로 봅니다.</p>
+            <p className="muted">FA 재계약은 원소속 구단 우선 협상이며, 결렬되면 FA 시장에 나갑니다. 재계약은 샐러리캡의 105%(31.5억)까지 허용됩니다.</p>
+          </div>
           <div className="table-wrap">
             <table>
-              <thead><tr><th>선수</th><th>구분</th><th>현재 보수</th><th>요구액</th><th>공정가치</th><th>제시 / 결과</th></tr></thead>
-              <tbody>{data.negotiations.map((n) => <NegotiationRow key={n.id} n={n} onDone={reload} />)}</tbody>
+              <thead><tr><th>선수</th><th>구분</th><th>현재 보수</th><th>선수 요구액</th><th>적정 보수</th><th>제시 / 결과</th></tr></thead>
+              <tbody>{data.negotiations.map((n) => <NegotiationRow key={n.id} n={n} maxRounds={data.maxRounds ?? 5} onDone={reload} />)}</tbody>
             </table>
           </div>
         </Card>

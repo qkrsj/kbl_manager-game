@@ -28,11 +28,12 @@ import { generateDraftClass, generateForeignPool } from "./generatedPlayers";
 import { processOffseasonDevelopment } from "./development";
 import { generateKblCalendarSchedule, addDays, parseDate, formatDate } from "../../../packages/simulation-engine/seasonScheduler";
 import { regularSeasonRanking } from "./playoffs";
+import { productionTable, salaryTerms, negotiate, arbitrate, ProdRow, Ruling } from "./salaryNegotiation";
 
 type Db = Pool | PoolClient;
 
 export const FA_DAYS = 5;
-const MAX_NEGOTIATION_ROUNDS = 4;
+const MAX_NEGOTIATION_ROUNDS = 5;
 
 const round100 = (v: number) => Math.max(MIN_SALARY, Math.round(v / 100) * 100);
 const round10k = (v: number) => Math.round(v / 10000) * 10000;
@@ -44,6 +45,16 @@ async function franchiseRow(db: Db) {
   );
   const f = r.rows[0];
   return { id: f.id, seasonId: f.season_id, year: f.year as number, endYear: (f.year as number) + 1, userTeamId: f.user_team_id as number, stage: f.offseason_stage as string | null, faDay: f.fa_day as number, date: f.game_date as string };
+}
+
+/** 연봉협상·보수 조정의 비교 기준: 국내선수 보수와 지난 시즌 기록 */
+async function salaryContext(db: Db, seasonId: number, date: string, values?: Map<number, PlayerValue>) {
+  const vals = values ?? await computePlayerValues(db, seasonId, date);
+  const sal = await db.query(`SELECT player_id, salary_krw FROM contracts WHERE contract_type='domestic' AND salary_krw IS NOT NULL`);
+  const salaries = new Map<number, number>(sal.rows.map((r) => [r.player_id, Number(r.salary_krw)]));
+  const tn = await db.query(`SELECT id, name FROM teams`);
+  const table: ProdRow[] = productionTable(vals, salaries, new Map(tn.rows.map((r) => [r.id, r.name])));
+  return { values: vals, table };
 }
 
 // ============================================================
@@ -59,6 +70,8 @@ export interface PlayerValue {
   ppg: number;
   rpg: number;
   apg: number;
+  mpg: number;
+  eff: number;           // 경기당 효율 (득점+리바+어시+스틸+블록−야투실패−턴오버−자유투실패/2)
 }
 
 export async function computePlayerValues(db: Db, seasonId: number, date: string): Promise<Map<number, PlayerValue>> {
@@ -85,6 +98,7 @@ export async function computePlayerValues(db: Db, seasonId: number, date: string
     return {
       player: p, score, fair: 0, desiredYears, games,
       ppg: st ? Number(st.pts) : 0, rpg: st ? Number(st.reb) : 0, apg: st ? Number(st.ast) : 0,
+      mpg: st ? Number(st.min) : 0, eff: st ? Number(st.eff) : 0,
     };
   });
 
@@ -127,6 +141,7 @@ export async function startOffseason(db: Db): Promise<string[]> {
   await db.query(`DELETE FROM negotiations WHERE season_year=$1`, [f.endYear]);
 
   const values = await computePlayerValues(db, f.seasonId, f.date);
+  const { table } = await salaryContext(db, f.seasonId, f.date, values);
 
   // 직전 시즌 보수 순위 기록 (FA 보상 규정용)
   await db.query(
@@ -159,29 +174,37 @@ export async function startOffseason(db: Db): Promise<string[]> {
       const current = Number(row.salary_krw);
       if (expiring) {
         const ask = round100(Math.max(v.fair * 1.1, MIN_SALARY));
+        const reservation = Math.min(ask, round100(v.fair * (0.95 + Math.random() * 0.05)));
         await insertNegotiation(db, f.endYear, row.id, row.team_id, "fa_resign", ask, v.desiredYears, v.fair,
-          `FA 자격 취득. ${formatKrw(ask)} · ${v.desiredYears}년 계약을 원합니다`);
+          `FA 자격 취득. ${formatKrw(ask)} · ${v.desiredYears}년 계약을 원합니다`, reservation);
       } else {
-        const ask = round100(v.fair > current ? Math.max(v.fair * 1.05, current * 1.05) : Math.max(v.fair, current * 0.95));
-        await insertNegotiation(db, f.endYear, row.id, row.team_id, "salary", ask, 1, v.fair,
-          ask > current ? `활약을 인정받고 싶습니다. ${formatKrw(ask)}을(를) 원합니다` : `현재 수준(${formatKrw(ask)}) 유지를 원합니다`);
+        // 연봉협상: 지난 시즌 기록 중심 + 인상 폭 상한 (salaryNegotiation.ts)
+        const t = salaryTerms(v, current, table);
+        const change = (t.ask - current) / current;
+        await insertNegotiation(db, f.endYear, row.id, row.team_id, "salary", t.ask, 1, t.target,
+          change > 0.25 ? `지난 시즌 활약을 인정받고 싶습니다. ${formatKrw(t.ask)}(+${Math.round(change * 100)}%)을(를) 원합니다`
+            : change > 0.1 ? `한 단계 올라선 만큼 대우해 주세요. ${formatKrw(t.ask)}(+${Math.round(change * 100)}%)을(를) 원합니다`
+            : change > 0.03 ? `소폭 인상을 원합니다. ${formatKrw(t.ask)}(+${Math.round(change * 100)}%)`
+            : change >= -0.03 ? `현재 수준(${formatKrw(t.ask)}) 유지를 원합니다`
+            : `기록이 아쉬웠던 건 압니다. ${formatKrw(t.ask)} 정도면 받아들이겠습니다`, t.reservation);
       }
     } else if (expiring) {
       const cap = row.contract_type === "foreign" ? FOREIGN_SINGLE_CAP_USD : ASIA_CAP_USD;
       const ask = Math.min(cap, round10k(Math.max(v.fair * 1.05, Number(row.salary_usd) * 0.9)));
+      const reservation = Math.min(ask, round10k(v.fair * (0.92 + Math.random() * 0.06)));
       await insertNegotiation(db, f.endYear, row.id, row.team_id, "foreign_resign", ask, 1, v.fair,
-        `재계약 시 $${ask.toLocaleString()}을(를) 원합니다`);
+        `재계약 시 $${ask.toLocaleString()}을(를) 원합니다`, reservation);
     }
   }
   events.push("비시즌 시작: 연봉협상과 FA 재계약을 진행하세요");
   return events;
 }
 
-async function insertNegotiation(db: Db, year: number, playerId: number, teamId: number, kind: string, ask: number, years: number, fair: number, message: string) {
+async function insertNegotiation(db: Db, year: number, playerId: number, teamId: number, kind: string, ask: number, years: number, fair: number, message: string, reservation: number) {
   await db.query(
-    `INSERT INTO negotiations (season_year, player_id, team_id, kind, asking_amount, asking_years, fair_value, message)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-    [year, playerId, teamId, kind, ask, years, fair, message]
+    `INSERT INTO negotiations (season_year, player_id, team_id, kind, asking_amount, asking_years, fair_value, message, min_amount, history)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+    [year, playerId, teamId, kind, ask, years, fair, message, reservation, JSON.stringify([{ round: 0, ask }])]
   );
 }
 
@@ -213,45 +236,89 @@ export async function offerNegotiation(pool: Pool, negotiationId: number, amount
   if (n.status !== "open") throw new Error("이미 종료된 협상입니다");
   if (!Number.isFinite(amount) || amount <= 0) throw new Error("금액을 입력하세요");
   years = n.kind === "fa_resign" ? Math.max(1, Math.min(MAX_CONTRACT_YEARS, Math.round(years || 1))) : 1;
-  amount = n.contract_type === "domestic" ? round100(amount) : round10k(amount);
+  const isKrw = n.contract_type === "domestic";
+  const roundTo = isKrw ? round100 : round10k;
+  amount = roundTo(amount);
 
   const payroll = await teamPayroll(pool, f.userTeamId);
-  const current = n.contract_type === "domestic" ? Number(n.salary_krw) : Number(n.salary_usd);
+  const current = isKrw ? Number(n.salary_krw) : Number(n.salary_usd);
   const capErr = checkContract(payroll, n.contract_type, amount, { replacingAmount: current, isOwnPlayer: true });
   if (capErr) throw new Error(capErr);
 
+  const fmt = (v: number) => (isKrw ? formatKrw(v) : `$${v.toLocaleString()}`);
   const ask = Number(n.asking_amount);
+  const reservation = n.min_amount !== null ? Number(n.min_amount) : Math.min(ask, roundTo(Number(n.fair_value) * 0.97));
+  // FA 재계약: 원하는 계약기간과 2년 이상 다르면 그만큼 돈을 더 원함
   const yearsPenalty = n.kind === "fa_resign" && Math.abs(years - n.asking_years) >= 2 ? 1.05 : 1;
+  const reply = negotiate(
+    {
+      ask, reservation, rounds: n.rounds, lastOffer: n.last_offer !== null ? Math.round(Number(n.last_offer) / yearsPenalty) : null, maxRounds: MAX_NEGOTIATION_ROUNDS,
+      // 연봉협상에서 오를 자격이 있는 선수는 현재 보수 아래로는 양보하지 않음
+      minFloor: n.kind === "salary" && Number(n.fair_value) >= current ? current : undefined,
+    },
+    Math.round(amount / yearsPenalty), fmt, roundTo,
+  );
   const rounds = n.rounds + 1;
+  const history = [...(n.history ?? [{ round: 0, ask }]), { round: rounds, offer: amount, ask: reply.result === "accepted" ? amount : reply.newAsk, mood: reply.mood }];
   let status = "open";
-  let message: string;
-  let newAsk = ask;
-  const fmt = (v: number) => (n.contract_type === "domestic" ? formatKrw(v) : `$${v.toLocaleString()}`);
+  let message = `${n.name}: "${reply.quote}"`;
+  let ruling: Ruling | null = null;
+  const newAsk = reply.result === "accepted" ? amount : reply.newAsk;
 
-  if (amount >= ask * yearsPenalty) {
+  if (reply.result === "accepted") {
     status = "accepted";
-    message = `${n.name}: "좋습니다. ${fmt(amount)}${n.kind === "fa_resign" ? `, ${years}년` : ""} 조건에 사인하겠습니다."`;
+    message = `${n.name}: "${reply.quote}"${n.kind === "fa_resign" ? ` (${years}년)` : ""}`;
     await applyNegotiatedContract(pool, n, amount, years, f.endYear);
-  } else if (amount >= ask * 0.88) {
-    newAsk = n.contract_type === "domestic" ? round100((ask + amount) / 2 + ask * 0.01) : round10k((ask + amount) / 2);
-    message = `${n.name}: "조금만 더 써 주세요. ${fmt(newAsk)}이면 사인하겠습니다."`;
-  } else {
-    message = `${n.name}: "제 가치에 한참 못 미치는 제안입니다. (요구액 ${fmt(ask)})"`;
-  }
-  if (status === "open" && rounds >= MAX_NEGOTIATION_ROUNDS) {
+  } else if (reply.result === "failed") {
     if (n.kind === "salary") {
+      ruling = await runArbitration(pool, f, n, newAsk, amount);
       status = "arbitration";
-      message += " → 합의 실패, KBL 재정위원회에 보수 조정을 신청합니다.";
+      message += ` → 합의 실패, 재정위원회 판결: ${ruling.summary}`;
     } else {
       status = "declined";
       message += " → 협상 결렬. FA 시장에 나갑니다.";
     }
   }
   await pool.query(
-    `UPDATE negotiations SET asking_amount=$2, last_offer=$3, last_offer_years=$4, rounds=$5, status=$6, message=$7 WHERE id=$1`,
-    [negotiationId, newAsk, amount, years, rounds, status, message]
+    `UPDATE negotiations SET asking_amount=$2, last_offer=$3, last_offer_years=$4, rounds=$5, status=$6, message=$7, history=$8, mood=$9 WHERE id=$1`,
+    [negotiationId, newAsk, amount, years, rounds, status, message, JSON.stringify(history), reply.mood]
   );
-  return { status, message, askingAmount: newAsk };
+  return { status, message, askingAmount: newAsk, mood: reply.mood, ruling };
+}
+
+/** 유저가 직접 보수 조정 신청 (연봉협상, 한 번 이상 제시한 뒤) */
+export async function requestArbitration(pool: Pool, negotiationId: number) {
+  const f = await franchiseRow(pool);
+  if (f.stage !== "resign") throw new Error("연봉협상 기간이 아닙니다");
+  const r = await pool.query(
+    `SELECT n.*, p.name, c.salary_krw, c.contract_type FROM negotiations n
+     JOIN players p ON p.id=n.player_id JOIN contracts c ON c.player_id=n.player_id WHERE n.id=$1`,
+    [negotiationId]
+  );
+  const n = r.rows[0];
+  if (!n || n.team_id !== f.userTeamId) throw new Error("협상을 찾을 수 없습니다");
+  if (n.status !== "open") throw new Error("이미 종료된 협상입니다");
+  if (n.kind !== "salary") throw new Error("보수 조정은 계약기간이 남은 선수의 연봉협상에서만 신청할 수 있습니다");
+  if (n.last_offer === null) throw new Error("먼저 한 번 이상 금액을 제시해야 보수 조정을 신청할 수 있습니다");
+  const ruling = await runArbitration(pool, f, n, Number(n.asking_amount), Number(n.last_offer));
+  const message = `보수 조정 신청 → 재정위원회 판결: ${ruling.summary}`;
+  await pool.query(`UPDATE negotiations SET status='arbitration', message=$2 WHERE id=$1`, [negotiationId, message]);
+  return { status: "arbitration", message, ruling };
+}
+
+/** 재정위원회 판결을 내리고 계약에 반영 */
+async function runArbitration(db: Db, f: Awaited<ReturnType<typeof franchiseRow>>, n: any, playerAsk: number, teamOffer: number, ctx?: Awaited<ReturnType<typeof salaryContext>>): Promise<Ruling> {
+  const { values, table } = ctx ?? await salaryContext(db, f.seasonId, f.date);
+  const v = values.get(n.player_id);
+  const current = Number(n.salary_krw);
+  const ruling: Ruling = v ? arbitrate(v, current, playerAsk, teamOffer, table) : {
+    amount: teamOffer, side: "team", recordValue: current, playerAsk, teamOffer, current,
+    stats: { games: 0, mpg: 0, ppg: 0, rpg: 0, apg: 0, eff: 0, pct: 0 }, comps: [], reasons: ["기록 없음"], summary: "기록이 없어 구단 제시액으로 결정",
+  };
+  await db.query(`UPDATE contracts SET salary_krw=$2, source='arbitration' WHERE player_id=$1`, [n.player_id, ruling.amount]);
+  await db.query(`UPDATE negotiations SET ruling=$2 WHERE id=$1`, [n.id, JSON.stringify(ruling)]);
+  await logTx(db, f.endYear, n.team_id, n.player_id, "arbitration", `${n.name} 보수 조정 판결 (${formatKrw(ruling.amount)} · ${ruling.side === "player" ? "선수 측 인정" : ruling.side === "team" ? "구단 측 인정" : "절충"})`);
+  return ruling;
 }
 
 async function applyNegotiatedContract(db: Db, n: any, amount: number, years: number, endYear: number) {
@@ -291,6 +358,7 @@ async function finalizeResign(db: Db): Promise<string[]> {
   const f = await franchiseRow(db);
   const events: string[] = [];
   const values = await computePlayerValues(db, f.seasonId, f.date);
+  const sctx = await salaryContext(db, f.seasonId, f.date, values);
 
   // 유저 팀 협상 마무리
   const negs = await db.query(
@@ -301,17 +369,20 @@ async function finalizeResign(db: Db): Promise<string[]> {
   );
   for (const n of negs.rows) {
     if (n.status === "accepted") continue;
+    if (n.status === "arbitration") continue; // 이미 판결 받음
     if (n.kind === "salary") {
-      // 보수 조정 (재정위원회): 선수 요구액 vs 구단 제시액 중 공정가치에 가까운 쪽
-      const teamOffer = n.last_offer ?? Number(n.salary_krw);
+      // 합의 못 한 채 협상 마감 → 재정위원회 보수 조정 (구단 제시액이 없으면 현재 보수를 제시한 것으로 봄)
       const ask = Number(n.asking_amount);
-      const fair = Number(n.fair_value);
-      const decided = Math.abs(ask - fair) < Math.abs(teamOffer - fair) ? ask : teamOffer;
-      await db.query(`UPDATE contracts SET salary_krw=$2, source='arbitration' WHERE player_id=$1`, [n.player_id, decided]);
-      await db.query(`UPDATE negotiations SET status='arbitration', message=$2 WHERE id=$1`, [n.id,
-        `재정위원회 결정: ${decided === ask ? "선수" : "구단"} 제시액 ${formatKrw(decided)} 채택`]);
-      events.push(`[보수 조정] ${n.name}: ${decided === ask ? "선수" : "구단"} 제시액 ${formatKrw(decided)}으로 결정`);
-      await logTx(db, f.endYear, f.userTeamId, n.player_id, "arbitration", `${n.name} 보수 조정 결정 (${formatKrw(decided)})`);
+      if (n.last_offer === null && ask <= Number(n.salary_krw)) {
+        // 제시 없이 마감했고 선수가 현재 보수 이하를 원했으면 다툴 일이 없음 → 요구액대로 계약
+        await applyNegotiatedContract(db, n, ask, 1, f.endYear);
+        await db.query(`UPDATE negotiations SET status='accepted', last_offer=$2, message=$3 WHERE id=$1`, [n.id, ask, `협상 마감 — 선수 요구액(${formatKrw(ask)})대로 계약`]);
+        continue;
+      }
+      const teamOffer = n.last_offer ?? Number(n.salary_krw);
+      const ruling = await runArbitration(db, f, n, ask, teamOffer, sctx);
+      await db.query(`UPDATE negotiations SET status='arbitration', message=$2 WHERE id=$1`, [n.id, `재정위원회 판결: ${ruling.summary}`]);
+      events.push(`[보수 조정] ${n.name}: ${ruling.summary} → ${formatKrw(ruling.amount)}`);
     } else {
       await toFreeAgent(db, n.player_id, f.endYear, `${n.name} FA 시장 진출`);
       events.push(`${n.name} 선수가 FA 시장에 나갔습니다`);
@@ -336,8 +407,10 @@ async function finalizeResign(db: Db): Promise<string[]> {
       if (!v) continue;
       const expiring = r.fa_year <= f.endYear;
       if (r.contract_type === "domestic" && !expiring) {
+        // AI 구단 연봉협상: 유저 팀과 같은 기준(기록 중심·인상 상한)으로, 요구액과 합의 가능선 사이에서 타결
         const current = Number(r.salary_krw);
-        const next = round100(current * 0.5 + v.fair * 0.5);
+        const t = salaryTerms(v, current, sctx.table);
+        const next = round100((t.ask + t.reservation) / 2);
         const payroll = await teamPayroll(db, teamId);
         if (!checkContract(payroll, "domestic", next, { replacingAmount: current, isOwnPlayer: true })) {
           await db.query(`UPDATE contracts SET salary_krw=$2, source='negotiated' WHERE player_id=$1`, [r.id, next]);
@@ -711,6 +784,7 @@ export async function offseasonOverview(pool: Pool) {
   const f = await franchiseRow(pool);
   const negotiations = await pool.query(
     `SELECT n.id, n.kind, n.asking_amount, n.asking_years, n.last_offer, n.last_offer_years, n.rounds, n.status, n.fair_value, n.message,
+            n.history, n.mood, n.ruling,
             p.id AS player_id, p.name, p.position_group, p.birth_date, c.contract_type, c.salary_krw, c.salary_usd, c.fa_year
      FROM negotiations n JOIN players p ON p.id=n.player_id JOIN contracts c ON c.player_id=n.player_id
      WHERE n.season_year=$1 AND n.team_id=$2 ORDER BY n.kind, c.salary_krw DESC NULLS LAST`,
@@ -722,7 +796,7 @@ export async function offseasonOverview(pool: Pool) {
     [f.endYear]
   );
   return {
-    stage: f.stage, faDay: f.faDay, faDays: FA_DAYS, endYear: f.endYear,
+    stage: f.stage, faDay: f.faDay, faDays: FA_DAYS, endYear: f.endYear, maxRounds: MAX_NEGOTIATION_ROUNDS,
     payroll: await teamPayroll(pool, f.userTeamId),
     negotiations: negotiations.rows.map((n) => ({ ...n, age: ageOn(n.birth_date, f.date) })),
     transactions: tx.rows,

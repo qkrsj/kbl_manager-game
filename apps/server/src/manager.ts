@@ -80,6 +80,11 @@ export async function ensureManagerSchema(db: Db) {
   for (const n of [1, 2, 3]) {
     await db.query(`ALTER TABLE team_tactics ADD COLUMN IF NOT EXISTS option${n}_player_id INTEGER REFERENCES players(id) ON DELETE SET NULL`);
   }
+  // 연봉협상: 선수의 합의 가능선(비공개)·제시 기록·분위기, 보수 조정 판결
+  await db.query(`ALTER TABLE negotiations ADD COLUMN IF NOT EXISTS min_amount INTEGER`);
+  await db.query(`ALTER TABLE negotiations ADD COLUMN IF NOT EXISTS history JSONB`);
+  await db.query(`ALTER TABLE negotiations ADD COLUMN IF NOT EXISTS mood TEXT`);
+  await db.query(`ALTER TABLE negotiations ADD COLUMN IF NOT EXISTS ruling JSONB`);
   // 뉴스 · 다른 팀이 보낸 트레이드 제안
   await ensureNewsSchema(db);
   await ensureTradeOfferSchema(db);
