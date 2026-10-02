@@ -45,3 +45,10 @@
   .tp-sal { display: none; }
   .tp-head span:last-child { display: none; }
 }
+
+/* 받은 트레이드 제안 */
+.offer { border: 1px solid var(--border); border-left: 4px solid var(--team, var(--accent)); border-radius: 12px; padding: 12px; margin-bottom: 10px; display: flex; flex-direction: column; gap: 10px; background: var(--panel-2); }
+.offer-head { display: flex; gap: 10px; align-items: center; }
+.offer-head b { display: block; }
+.offer-head small { color: var(--muted); font-size: 12px; }
+.offer-history { margin-top: 8px; }

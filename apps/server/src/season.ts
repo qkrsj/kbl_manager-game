@@ -15,6 +15,8 @@ import { loadLeaguePlayers, buildTeamSetup, BuildContext } from "./rosterBuilder
 import { processDailyDevelopment, processPostGame, loadTrainingPlan, TrainingPlan, GameLine, DevelopmentChange } from "./development";
 import { createFirstRound, updatePlayoffs } from "./playoffs";
 import { startOffseason } from "./offseason";
+import { addNews, gameNews, injuryNews, shortTeam, NewsItem } from "./news";
+import { maybeAiOfferToUser, expireTradeOffers } from "./trades";
 
 type Db = Pool | PoolClient;
 
@@ -105,7 +107,16 @@ export async function persistGameResult(db: Db, game: GameRow, result: GameResul
       });
     }
   }
-  return processPostGame(db, game.game_date, lines, game.series_id !== null);
+  const injuries: { playerId: number; name: string; teamId: number; days: number }[] = [];
+  const changes = await processPostGame(db, game.game_date, lines, game.series_id !== null, injuries);
+  // 뉴스: 경기 결과·대기록·연승, 경기 중 부상
+  await gameNews(db, {
+    id: game.id, date: game.game_date, homeId: game.home_team_id, awayId: game.away_team_id,
+    homeName: ctx.teamNames.get(game.home_team_id) ?? "", awayName: ctx.teamNames.get(game.away_team_id) ?? "",
+    homeScore: result.home.totalScore, awayScore: result.away.totalScore, ot: result.wentToOT, playoff: game.series_id !== null,
+  }, lines, ctx.userTeamId);
+  await addNews(db, injuryNews(game.game_date, injuries.map((i) => ({ ...i, during: "game" as const })), ctx.teamNames, ctx.userTeamId));
+  return changes;
 }
 
 async function gamesOn(db: Db, seasonId: number, date: string): Promise<GameRow[]> {
@@ -158,6 +169,7 @@ export interface DayResult {
   injuries: { name: string; days: number }[];
   events: string[];
   trainingPlan: TrainingPlan | null;
+  userGame: { gameId: number; home: string; away: string; homeScore: number; awayScore: number; ot: boolean; won: boolean } | null;
 }
 
 /** 하루 진행 */
@@ -193,11 +205,29 @@ export async function advanceDay(pool: Pool, planOverride?: TrainingPlan): Promi
       );
     }
     const dev = await processDailyDevelopment(db, f.date, f.userTeamId, plan, played);
+    const news: NewsItem[] = injuryNews(f.date, dev.injuries.map((i) => ({ ...i, during: "training" as const })), ctx.teamNames, f.userTeamId);
+    const grown = dev.changes.filter((c) => c.teamId === f.userTeamId && c.delta > 0);
+    if (grown.length > 0) {
+      const byPlayer = new Map<string, string[]>();
+      grown.forEach((c) => byPlayer.set(c.name, [...(byPlayer.get(c.name) ?? []), `${c.label} +${c.delta}`]));
+      news.push({ date: f.date, category: "growth", teamId: f.userTeamId, importance: 1,
+        headline: `${shortTeam(f.userTeamName)} 훈련 성과 — ${[...byPlayer.keys()].slice(0, 3).join(", ")}${byPlayer.size > 3 ? ` 외 ${byPlayer.size - 3}명` : ""} 능력치 상승`,
+        body: [...byPlayer.entries()].map(([n, l]) => `${n}: ${l.join(", ")}`).join(" / ") });
+    }
+    // 내일 부상에서 돌아오는 우리 팀 선수
+    const back = await db.query(
+      `SELECT p.id, p.name FROM players p JOIN player_condition pc ON pc.player_id=p.id WHERE p.team_id=$1 AND pc.injured_until=$2`,
+      [f.userTeamId, addDays(f.date, 1)]
+    );
+    back.rows.forEach((r) => news.push({ date: f.date, category: "return", teamId: f.userTeamId, playerId: r.id, importance: 2, headline: `${r.name}, 부상 털고 복귀 준비 완료` }));
 
     // 시즌 단계 전환
     const events: string[] = [];
     const aiTrade = await maybeAiTrade(db); // AI 팀끼리 트레이드 (아주 드물게)
-    if (aiTrade) events.push(aiTrade);
+    if (aiTrade) { events.push(aiTrade); news.push({ date: f.date, category: "trade", importance: 3, headline: aiTrade.replace("[트레이드] ", "트레이드 성사: ") }); }
+    await expireTradeOffers(db, f.date);
+    const offer = await maybeAiOfferToUser(db); // 다른 팀이 우리 팀에 트레이드 문의
+    if (offer) { events.push(offer.headline); news.push({ date: f.date, category: "trade_offer", teamId: f.userTeamId, team2Id: offer.teamId, importance: 3, headline: offer.headline, body: offer.body }); }
     let phase: FranchiseState["phase"] = f.phase;
     let nextDate = addDays(f.date, 1);
     if (phase === "regular") {
@@ -221,13 +251,23 @@ export async function advanceDay(pool: Pool, planOverride?: TrainingPlan): Promi
     }
     await db.query(`UPDATE franchise SET game_date=$1, phase=$2, current_round=current_round+1 WHERE id=$3`, [nextDate, phase, f.id]);
     if (phase === "offseason") events.push(...(await startOffseason(db)));
+    events.filter((e) => !e.startsWith("[트레이드]") && e !== offer?.headline)
+      .forEach((e) => news.push({ date: f.date, category: "season", importance: 3, headline: e }));
+    await addNews(db, news);
 
+    const ug = userGame ? await db.query(`SELECT home_score, away_score, went_to_ot FROM games WHERE id=$1`, [userGame.id]) : null;
+    const ugRow = ug?.rows[0];
     return {
       date: f.date, nextDate, phase, results,
       userTeamChanges: dev.changes.filter((c) => c.teamId === f.userTeamId),
       injuries: dev.injuries.filter((i) => i.teamId === f.userTeamId).map((i) => ({ name: i.name, days: i.days })),
       events,
       trainingPlan: played.has(f.userTeamId) ? null : plan,
+      userGame: userGame && ugRow && ugRow.home_score !== null ? {
+        gameId: userGame.id, home: ctx.teamNames.get(userGame.home_team_id) ?? "", away: ctx.teamNames.get(userGame.away_team_id) ?? "",
+        homeScore: ugRow.home_score, awayScore: ugRow.away_score, ot: ugRow.went_to_ot,
+        won: (userGame.home_team_id === f.userTeamId) === (ugRow.home_score > ugRow.away_score),
+      } : null,
     };
   });
 }
@@ -236,23 +276,28 @@ export async function advanceDay(pool: Pool, planOverride?: TrainingPlan): Promi
  * 달력에서 고른 날짜까지 저장된 훈련 계획으로 하루씩 진행.
  * 중간에 우리 팀 경기일이 오면 그날 멈춘다 (경기는 직접 치러야 하므로). 시즌 단계가 바뀌어도 멈춤.
  */
-export async function advanceUntil(pool: Pool, target: string): Promise<{ days: DayResult[]; stoppedAt: string; reason: string }> {
+export async function advanceUntil(pool: Pool, target: string, opts: { simUserGames?: boolean } = {}): Promise<{ days: DayResult[]; stoppedAt: string; reason: string; simulated: number }> {
+  let simulated = 0;
   const out: DayResult[] = [];
   for (let i = 0; i < 200; i++) {
     const f = await getFranchise(pool);
-    if (f.phase === "offseason") return { days: out, stoppedAt: f.date, reason: "비시즌이 시작되었습니다" };
-    if (f.date >= target) return { days: out, stoppedAt: f.date, reason: "선택한 날짜에 도착했습니다" };
+    if (f.phase === "offseason") return { days: out, stoppedAt: f.date, reason: "비시즌이 시작되었습니다", simulated };
+    if (f.date >= target) return { days: out, stoppedAt: f.date, reason: "선택한 날짜에 도착했습니다", simulated };
     const ug = await userGameToday(pool, f);
     if (ug) {
       const s = await pool.query(`SELECT home_score FROM games WHERE id=$1`, [ug.id]);
-      if (s.rows[0].home_score === null) return { days: out, stoppedAt: f.date, reason: "우리 팀 경기일이라 멈췄습니다" };
+      if (s.rows[0].home_score === null) {
+        if (!opts.simUserGames) return { days: out, stoppedAt: f.date, reason: "우리 팀 경기일이라 멈췄습니다", simulated };
+        await quickSimUserGame(pool, ug.id); // 경기 있는 날도 자동 진행: 저장된 출전시간·전술로 시뮬레이션
+        simulated++;
+      }
     }
     const day = await advanceDay(pool);
     out.push(day);
-    if (day.phase !== f.phase) return { days: out, stoppedAt: day.nextDate, reason: day.events[0] ?? "시즌 단계가 바뀌었습니다" };
+    if (day.phase !== f.phase) return { days: out, stoppedAt: day.nextDate, reason: day.events[0] ?? "시즌 단계가 바뀌었습니다", simulated };
   }
   const f = await getFranchise(pool);
-  return { days: out, stoppedAt: f.date, reason: "" };
+  return { days: out, stoppedAt: f.date, reason: "", simulated };
 }
 
 /** 우리 팀 다음 경기일(또는 단계 전환)까지 저장된 훈련 계획으로 하루씩 진행 */
@@ -271,4 +316,28 @@ export async function advanceToNextGameDay(pool: Pool): Promise<DayResult[]> {
     if (day.events.length > 0 && day.phase !== f.phase) break;
   }
   return out;
+}
+
+/**
+ * 상단 [다음] 버튼.
+ *  - 오늘 우리 팀 경기가 아직이면 진행하지 않고 "경기 준비" 화면으로 보냄
+ *  - 아니면 저장된 훈련 계획으로 하루 진행 → 다음 날이 경기일인지 훈련일인지 알려줌
+ */
+export async function nextStep(pool: Pool): Promise<
+  | { action: "offseason" }
+  | { action: "gameday"; gameId: number }
+  | { action: "advanced"; day: DayResult; next: "gameday" | "training" | "offseason" }
+> {
+  const f = await getFranchise(pool);
+  if (f.phase === "offseason") return { action: "offseason" };
+  const ug = await userGameToday(pool, f);
+  if (ug) {
+    const s = await pool.query(`SELECT home_score FROM games WHERE id=$1`, [ug.id]);
+    if (s.rows[0].home_score === null) return { action: "gameday", gameId: ug.id };
+  }
+  const day = await advanceDay(pool);
+  const nf = await getFranchise(pool);
+  if (nf.phase === "offseason") return { action: "advanced", day, next: "offseason" };
+  const nextGame = await userGameToday(pool, nf);
+  return { action: "advanced", day, next: nextGame ? "gameday" : "training" };
 }

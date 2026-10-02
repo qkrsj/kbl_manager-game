@@ -1,0 +1,48 @@
+/* 뉴스 · 하루 소식 */
+.day-news { display: flex; flex-direction: column; gap: 10px; }
+.dn-games { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 6px; }
+.dn-game {
+  display: flex; flex-direction: column; gap: 2px; padding: 6px 8px; border-radius: 9px; text-align: left;
+  background: var(--panel-2); border: 1px solid var(--border); font-size: 12px; font-weight: 500;
+}
+.dn-game.mine { border-color: var(--team, var(--accent)); box-shadow: inset 3px 0 0 var(--team, var(--accent)); }
+.dn-game small { color: var(--muted); font-size: 10px; }
+.dn-team { display: grid; grid-template-columns: 8px 1fr auto; gap: 6px; align-items: center; color: var(--muted); }
+.dn-team i { width: 8px; height: 8px; border-radius: 50%; }
+.dn-team b { font-variant-numeric: tabular-nums; }
+.dn-team.win { color: var(--text); font-weight: 700; }
+.dn-list { display: flex; flex-direction: column; gap: 6px; }
+.nw-item { display: grid; grid-template-columns: 26px 1fr; gap: 8px; padding: 8px 10px; border-radius: 10px; background: var(--panel-2); border: 1px solid var(--border); }
+.nw-item b { font-size: 13px; line-height: 1.4; }
+.nw-item p { margin: 3px 0 0; font-size: 12px; color: var(--muted); line-height: 1.45; }
+.nw-item.imp-3 { background: color-mix(in srgb, var(--accent) 7%, var(--panel)); }
+.nw-item.imp-3 b { font-size: 14px; }
+.nw-item.mine { border-color: var(--team, var(--accent)); box-shadow: inset 3px 0 0 var(--team, var(--accent)); }
+.nw-item.clickable { cursor: pointer; }
+.nw-item.clickable:hover { border-color: var(--accent); }
+.nw-icon { font-size: 17px; line-height: 1.2; text-align: center; }
+.nw-link { color: var(--accent); font-size: 11px; font-weight: 700; }
+
+.news-page { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 16px; align-items: start; }
+.news-dates {
+  position: sticky; top: 120px; max-height: calc(100vh - 140px); overflow-y: auto;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 8px;
+}
+.nd-month { font-size: 11px; font-weight: 800; color: var(--muted); padding: 8px 6px 4px; }
+.nd { width: 100%; display: flex; justify-content: space-between; align-items: center; padding: 6px 8px; border-radius: 8px; border: none; background: transparent; font-size: 13px; }
+.nd:hover { background: var(--panel-2); }
+.nd.on { background: var(--accent-soft); font-weight: 700; }
+.nd-badges { display: flex; gap: 4px; align-items: center; }
+.nd-badges em { font-style: normal; font-size: 11px; color: var(--muted); }
+.nd-mine { font-style: normal; font-size: 10px; padding: 0 5px; border-radius: 999px; background: var(--team, var(--accent)); color: #fff; }
+.news-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.news-head h2 { margin: 0; font-size: 20px; }
+.news-head .spacer { flex: 1; }
+
+@media (max-width: 800px) {
+  .news-page { grid-template-columns: 1fr; }
+  .news-dates { position: static; max-height: 180px; display: flex; flex-direction: column; }
+}
+.latest-headlines { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+.lh-head { display: flex; justify-content: space-between; align-items: center; font-size: 13px; }
+.lh-head a { font-size: 12px; }

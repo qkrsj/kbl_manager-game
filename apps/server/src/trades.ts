@@ -20,6 +20,8 @@
 import type { Pool, PoolClient } from "pg";
 import { getFranchise, withTx } from "./season";
 import { loadLeaguePlayers, LeaguePlayer } from "./rosterBuilder";
+import { addNews, shortTeam } from "./news";
+import { addDays } from "../../../packages/simulation-engine/seasonScheduler";
 import { teamPayroll, SOFT_CAP_LIMIT, MAX_DOMESTIC_ROSTER, MIN_DOMESTIC_ROSTER, MAX_FOREIGN, MAX_ASIA } from "./salaryCap";
 
 type Db = Pool | PoolClient;
@@ -241,6 +243,7 @@ export async function proposeTrade(pool: Pool, partnerId: number, giveIds: numbe
     const me = ctx.teams.get(ctx.f.userTeamId)!;
     const partner = ctx.teams.get(partnerId)!;
     const description = await executeTrade(db, ctx.f.date, ctx.f.seasonYear, me, partner, give, receive);
+    await addNews(db, [{ date: ctx.f.date, category: "trade", teamId: me.id, team2Id: partner.id, importance: 3, headline: description.replace("[트레이드] ", "트레이드 성사: ") }]);
     return { ...out, executed: true, description };
   });
 }
@@ -314,4 +317,170 @@ export async function maybeAiTrade(db: Db): Promise<string | null> {
   }
   if (!best) return null;
   return executeTrade(db, f.date, f.seasonYear, best.a, best.b, [best.pa], [best.pb]);
+}
+
+// ============================================================
+// 다른 팀이 우리 팀에 먼저 트레이드를 문의 (AI → 유저 제안)
+// ============================================================
+
+const OFFER_DAILY_CHANCE = 0.07;  // 조건이 맞는 날 제안이 올 확률
+const OFFER_COOLDOWN_DAYS = 10;   // 제안 사이 최소 간격
+const OFFER_VALID_DAYS = 5;       // 답하지 않으면 철회
+
+export async function ensureTradeOfferSchema(db: Db) {
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS trade_offers (
+      id SERIAL PRIMARY KEY,
+      team_id INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+      offer_date DATE NOT NULL,
+      expires_date DATE NOT NULL,
+      ai_gives INTEGER[] NOT NULL,
+      ai_wants INTEGER[] NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      note TEXT,
+      resolved_date DATE
+    )`);
+  // 제안할 때의 양 팀 평가 (제안은 기한 안에는 이 조건 그대로 유효)
+  await db.query(`ALTER TABLE trade_offers ADD COLUMN IF NOT EXISTS ai_gain REAL`);
+  await db.query(`ALTER TABLE trade_offers ADD COLUMN IF NOT EXISTS user_gain REAL`);
+}
+
+/** 기한이 지났거나 트레이드 기간이 끝난 제안은 철회 */
+export async function expireTradeOffers(db: Db, date: string) {
+  const f = await getFranchise(db);
+  const window = await tradeWindow(db, f);
+  await db.query(
+    `UPDATE trade_offers SET status='expired', resolved_date=$1 WHERE status='pending' AND (expires_date < $1 OR $2::boolean)`,
+    [date, !window.open]
+  );
+}
+
+/**
+ * 하루 진행 때 호출. AI 팀 몇 곳이 우리 팀 선수 중 필요한 선수를 찾아, 자기 선수 1~2명을 주는 윈윈 제안을 만든다.
+ * 조건: AI 자기 기준 +3% 이상 이득(클수록 우선), 우리 팀 기준으로도 +2~15% 이득인 제안, 간판 선수는 내주지 않음, 규정 통과.
+ */
+export async function maybeAiOfferToUser(db: Db): Promise<{ teamId: number; headline: string; body: string } | null> {
+  const f = await getFranchise(db);
+  if (f.phase !== "regular") return null;
+  const window = await tradeWindow(db, f);
+  if (!window.open) return null;
+  const pending = await db.query(`SELECT COUNT(*)::int AS n FROM trade_offers WHERE status='pending'`);
+  if (pending.rows[0].n > 0) return null;
+  const last = await db.query(`SELECT MAX(offer_date)::text AS d FROM trade_offers`);
+  if (last.rows[0].d && addDays(last.rows[0].d, OFFER_COOLDOWN_DAYS) > f.date) return null;
+  if (Math.random() > OFFER_DAILY_CHANCE) return null;
+
+  const { teams } = await loadTeams(db);
+  const me = teams.get(f.userTeamId)!;
+  const ai = [...teams.values()].filter((t) => t.id !== me.id).sort(() => Math.random() - 0.5).slice(0, 3);
+  // 최근 두 번 제안에서 원했던 선수는 이번엔 제외 (같은 선수만 계속 문의하지 않게)
+  const recent = await db.query(`SELECT ai_wants FROM trade_offers ORDER BY id DESC LIMIT 2`);
+  const recentWants = new Set<number>(recent.rows.flatMap((r) => r.ai_wants));
+  type Cand = { team: TeamInfo; want: ValuedPlayer; give: ValuedPlayer[]; aiGain: number; userGain: number };
+  const cands: Cand[] = [];
+  for (const team of ai) {
+    const face = [...team.players].sort((a, b) => playerValue(b, team.mode) - playerValue(a, team.mode))[0];
+    const targets = me.players
+      .filter((p) => p.overall >= 70 && !recentWants.has(p.id))
+      .sort((a, b) => playerValue(b, team.mode, needMultiplier(team, b.positionGroup)) - playerValue(a, team.mode, needMultiplier(team, a.positionGroup)))
+      .slice(0, 5);
+    const mine = team.players.filter((p) => p.id !== face?.id);
+    const combos: ValuedPlayer[][] = [];
+    mine.forEach((a, i) => { combos.push([a]); mine.slice(i + 1).forEach((b) => combos.push([a, b])); });
+    for (const want of targets) for (const give of combos) {
+      const aiSide = sideValue(team, [want], give);
+      const userSide = sideValue(me, give, [want]);
+      // 상대는 자기 이득을 최대한 챙기되, 우리가 받아들일 만한(+2~15%) 선에서 제안
+      if (aiSide.gainPct < AI_MIN_GAIN || userSide.gainPct < 0.02 || userSide.gainPct > 0.15) continue;
+      cands.push({ team, want, give, aiGain: aiSide.gainPct, userGain: userSide.gainPct });
+    }
+  }
+  // 원하는 선수마다 상대 이득이 가장 큰 조합 (규정 통과) → 상위 3명 중 하나를 무작위로
+  cands.sort((a, b) => b.aiGain - a.aiGain);
+  const best = new Map<number, Cand>();
+  for (const c of cands.slice(0, 80)) {
+    if (best.has(c.want.id) || best.size >= 3) continue;
+    if (await checkRules(db, me, c.give, [c.want]) || await checkRules(db, c.team, [c.want], c.give)) continue;
+    best.set(c.want.id, c);
+  }
+  const picks = [...best.values()];
+  if (picks.length > 0) {
+    const c = picks[Math.floor(Math.random() * picks.length)];
+    const gives = c.give.map((p) => `${p.name}(${p.overall})`).join("·");
+    const headline = `${shortTeam(c.team.name)}, ${c.want.name} 영입 문의 — ${gives} 제안`;
+    const body = `${c.team.name}(${MODE_LABEL[c.team.mode]})이(가) ${c.want.name}(${c.want.overall})을(를) 원합니다. ` +
+      `대가로 ${gives}을(를) 내놓겠다고 합니다. ${OFFER_VALID_DAYS}일 안에 [트레이드] 메뉴에서 답하지 않으면 철회됩니다.`;
+    await db.query(
+      `INSERT INTO trade_offers (team_id, offer_date, expires_date, ai_gives, ai_wants, note, ai_gain, user_gain) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [c.team.id, f.date, addDays(f.date, OFFER_VALID_DAYS - 1), c.give.map((p) => p.id), [c.want.id], body, c.aiGain, c.userGain]
+    );
+    return { teamId: c.team.id, headline, body };
+  }
+  return null;
+}
+
+/** 받은 제안 목록 (대기 중인 제안은 지금 기준 평가도 함께) */
+export async function listTradeOffers(pool: Pool) {
+  await ensureTradeOfferSchema(pool);
+  const r = await pool.query(
+    `SELECT o.id, o.team_id AS "teamId", t.name AS "teamName", o.offer_date::text AS "offerDate", o.expires_date::text AS "expiresDate",
+            o.ai_gives AS "aiGives", o.ai_wants AS "aiWants", o.status, o.note, o.resolved_date::text AS "resolvedDate",
+            o.ai_gain AS "aiGain", o.user_gain AS "userGain"
+     FROM trade_offers o JOIN teams t ON t.id=o.team_id ORDER BY o.id DESC LIMIT 15`
+  );
+  const f = await getFranchise(pool);
+  const league = new Map((await loadLeaguePlayers(pool, f.date)).map((p) => [p.id, p]));
+  const view = (id: number) => {
+    const p = league.get(id);
+    return p ? { id, name: p.name, overall: p.ratings.overall, positionGroup: p.positionGroup, age: p.age, teamId: p.teamId } : null;
+  };
+  const out = [];
+  for (const o of r.rows) {
+    let evaluation = null;
+    if (o.status === "pending") {
+      evaluation = await evaluateTrade(pool, o.teamId, o.aiWants, o.aiGives).catch((e) => ({ error: String(e.message) }));
+    }
+    out.push({
+      ...o,
+      gives: o.aiGives.map(view).filter(Boolean),
+      wants: o.aiWants.map(view).filter(Boolean),
+      evaluation,
+    });
+  }
+  return out;
+}
+
+/**
+ * 제안에 답하기. 상대가 먼저 낸 제안이라 기한 안에는 그 조건 그대로 유효하다 —
+ * 수락하면 로스터·샐러리캡 규정과 트레이드 기간, 선수가 아직 그 팀에 있는지만 다시 확인하고 성사.
+ */
+export async function respondTradeOffer(pool: Pool, offerId: number, accept: boolean) {
+  return withTx(pool, async (db) => {
+    const r = await db.query(`SELECT * FROM trade_offers WHERE id=$1 FOR UPDATE`, [offerId]);
+    const o = r.rows[0];
+    if (!o || o.status !== "pending") throw new Error("이미 끝난 제안입니다");
+    const f = await getFranchise(db);
+    if (!accept) {
+      await db.query(`UPDATE trade_offers SET status='rejected', resolved_date=$2 WHERE id=$1`, [offerId, f.date]);
+      return { executed: false, status: "rejected", message: "제안을 거절했습니다" };
+    }
+    let ev: Awaited<ReturnType<typeof evaluate>>;
+    try {
+      ev = await evaluate(db, o.team_id, o.ai_wants, o.ai_gives);
+    } catch (e) {
+      await db.query(`UPDATE trade_offers SET status='withdrawn', resolved_date=$2 WHERE id=$1`, [offerId, f.date]);
+      return { executed: false, status: "withdrawn", message: `제안이 무효가 되었습니다: ${(e as Error).message}` };
+    }
+    const blocker = ev.windowError ?? ev.ruleError;
+    if (blocker) {
+      await db.query(`UPDATE trade_offers SET status='withdrawn', resolved_date=$2 WHERE id=$1`, [offerId, f.date]);
+      return { executed: false, status: "withdrawn", message: `규정상 성사될 수 없어 제안이 철회되었습니다: ${blocker}` };
+    }
+    const me = ev.ctx.teams.get(f.userTeamId)!;
+    const partner = ev.ctx.teams.get(o.team_id)!;
+    const description = await executeTrade(db, f.date, f.seasonYear, me, partner, ev.give, ev.receive);
+    await db.query(`UPDATE trade_offers SET status='accepted', resolved_date=$2 WHERE id=$1`, [offerId, f.date]);
+    await addNews(db, [{ date: f.date, category: "trade", teamId: me.id, team2Id: partner.id, importance: 3, headline: description.replace("[트레이드] ", "트레이드 성사: ") }]);
+    return { executed: true, status: "accepted", message: `트레이드 성사! ${description}` };
+  });
 }

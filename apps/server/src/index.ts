@@ -7,8 +7,9 @@
 import express, { Request, Response } from "express";
 import cors from "cors";
 import { pool } from "./db";
-import { getFranchise, advanceDay, advanceToNextGameDay, advanceUntil, quickSimUserGame, userGameToday } from "./season";
-import { tradeContext, evaluateTrade, proposeTrade, suggestPackages, tradeHistory } from "./trades";
+import { getFranchise, advanceDay, advanceToNextGameDay, advanceUntil, quickSimUserGame, userGameToday, nextStep } from "./season";
+import { tradeContext, evaluateTrade, proposeTrade, suggestPackages, tradeHistory, listTradeOffers, respondTradeOffer } from "./trades";
+import { newsForDate, newsDates } from "./news";
 import { startLiveGame, getLiveGame, updateLiveGame, stepLiveGame, callLiveTimeout } from "./liveGames";
 import { loadLeaguePlayers, coachForTeam, ageOn, autoOffenseOptions } from "./rosterBuilder";
 import { aiMinutesPlan } from "./coaches";
@@ -236,7 +237,14 @@ app.get("/api/new-game/teams", route(async () => availableTeams()));
 app.get("/api/franchise", route(async () => {
   const f = await getFranchise(pool);
   const manager = await loadManagerProfile(pool);
-  return { ...f, season_label: f.seasonLabel, user_team: f.userTeamName, manager };
+  const offers = await pool.query(`SELECT COUNT(*)::int AS n FROM trade_offers WHERE status='pending'`).catch(() => ({ rows: [{ n: 0 }] }));
+  const ug = f.phase === "offseason" ? null : await userGameToday(pool, f);
+  const ugPlayed = ug ? (await pool.query(`SELECT home_score FROM games WHERE id=$1`, [ug.id])).rows[0].home_score !== null : false;
+  return {
+    ...f, season_label: f.seasonLabel, user_team: f.userTeamName, manager,
+    pendingOffers: offers.rows[0].n,
+    today: f.phase === "offseason" ? "offseason" : ug ? (ugPlayed ? "gameday_done" : "gameday") : "training",
+  };
 }));
 
 app.get("/api/dashboard", route(async () => {
@@ -702,7 +710,23 @@ app.post("/api/franchise/advance", route(async () => ({ days: await advanceToNex
 app.post("/api/franchise/advance-until", route(async (req) => {
   const date = String(req.body?.date ?? "");
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error("날짜 형식이 올바르지 않습니다");
-  return advanceUntil(pool, date);
+  return advanceUntil(pool, date, { simUserGames: !!req.body?.simUserGames });
+}));
+/** 상단 [다음]: 경기일이면 경기 준비로, 아니면 하루 진행 */
+app.post("/api/franchise/next", route(async () => nextStep(pool)));
+
+// ============================================================
+// 뉴스
+// ============================================================
+app.get("/api/news/dates", route(async () => {
+  const f = await getFranchise(pool);
+  return newsDates(pool, f.userTeamId);
+}));
+app.get("/api/news", route(async (req) => {
+  const f = await getFranchise(pool);
+  const date = String(req.query.date ?? "");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error("날짜 형식이 올바르지 않습니다");
+  return newsForDate(pool, date, f.userTeamId);
 }));
 
 // ============================================================
@@ -713,6 +737,8 @@ app.post("/api/trade/evaluate", route(async (req) => evaluateTrade(pool, Number(
 app.post("/api/trade/propose", route(async (req) => proposeTrade(pool, Number(req.body.teamId), (req.body.give ?? []).map(Number), (req.body.receive ?? []).map(Number))));
 app.post("/api/trade/suggest", route(async (req) => suggestPackages(pool, Number(req.body.teamId), (req.body.receive ?? []).map(Number))));
 app.get("/api/trade/history", route(async () => tradeHistory(pool)));
+app.get("/api/trade/offers", route(async () => listTradeOffers(pool)));
+app.post("/api/trade/offers/:id", route(async (req) => respondTradeOffer(pool, Number(req.params.id), !!req.body?.accept)));
 
 app.post("/api/franchise/games/:id/quick-sim", route(async (req) => quickSimUserGame(pool, Number(req.params.id))));
 app.post("/api/franchise/games/:id/live", route(async (req) => startLiveGame(pool, Number(req.params.id))));

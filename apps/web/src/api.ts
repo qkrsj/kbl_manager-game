@@ -25,6 +25,8 @@ export interface Franchise {
   offseasonStage: string | null;
   faDay: number;
   championTeamId: number | null;
+  pendingOffers?: number;                                   // 다른 팀이 보낸 트레이드 제안 (대기 중)
+  today?: "training" | "gameday" | "gameday_done" | "offseason";
 }
 
 export interface Coach {
@@ -129,7 +131,22 @@ export interface DayResult {
   injuries: { name: string; days: number }[];
   events: string[];
   trainingPlan: TrainingPlan | null;
+  userGame: { gameId: number; home: string; away: string; homeScore: number; awayScore: number; ot: boolean; won: boolean } | null;
 }
+
+export interface NewsRow {
+  id: number; date: string; category: string; headline: string; body: string | null;
+  teamId: number | null; team2Id: number | null; playerId: number | null; gameId: number | null; importance: number; mine: boolean | null;
+}
+export interface NewsDay {
+  date: string;
+  news: NewsRow[];
+  games: { id: number; homeId: number; awayId: number; home: string; away: string; homeScore: number | null; awayScore: number | null; ot: boolean; playoffLabel: string | null }[];
+}
+export type NextResult =
+  | { action: "offseason" }
+  | { action: "gameday"; gameId: number }
+  | { action: "advanced"; day: DayResult; next: "gameday" | "training" | "offseason" };
 
 // ============================================================
 // 포맷터 / 라벨

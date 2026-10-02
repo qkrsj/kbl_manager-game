@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { api, ratingClass } from "../api";
+import type { DayResult } from "../api";
 
 // ============================================================
 // 화면 이동 (라우터 대신 간단한 상태 기반 내비게이션)
@@ -9,6 +10,8 @@ import { api, ratingClass } from "../api";
 export type View =
   | { name: "dashboard" }                       // 홈(허브)
   | { name: "today" }
+  | { name: "gameday" }                         // 오늘 경기 준비
+  | { name: "news"; date?: string }             // 날짜별 뉴스
   | { name: "live"; sessionId: string }
   | { name: "myteam" }                          // 내 팀 개요
   | { name: "roster" }
@@ -31,9 +34,16 @@ export interface AppContextValue {
   version: number;       // 진행할 때마다 증가 → 화면들이 다시 불러옴
   userTeamId: number | null;
   openSettings: () => void;
+  next: () => void;                    // 상단 [다음]: 경기일이면 경기 준비, 아니면 하루 진행
+  advancing: boolean;
+  lastReport: { date: string; day: DayResult } | null; // 마지막으로 진행한 날의 결과 (달력 옆 소식)
+  setReport: (r: { date: string; day: DayResult } | null) => void;
 }
 
-export const AppContext = createContext<AppContextValue>({ go: () => {}, refresh: () => {}, version: 0, userTeamId: null, openSettings: () => {} });
+export const AppContext = createContext<AppContextValue>({
+  go: () => {}, refresh: () => {}, version: 0, userTeamId: null, openSettings: () => {},
+  next: () => {}, advancing: false, lastReport: null, setReport: () => {},
+});
 export const useApp = () => useContext(AppContext);
 
 /** GET 요청 + 로딩/에러 상태. deps가 바뀌거나 앱 version이 바뀌면 다시 불러온다. */

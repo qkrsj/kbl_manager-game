@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, formatDate, PHASE_LABEL, STAGE_LABEL } from "./api";
-import type { Franchise, Standing } from "./api";
+import type { Franchise, Standing, NextResult, DayResult } from "./api";
 import { AppContext } from "./components/common";
 import type { View } from "./components/common";
-import { TodayView } from "./components/Today";
+import { TodayView, GameDayView } from "./components/Today";
+import { NewsView } from "./components/News";
 import { LiveGameView } from "./components/LiveGame";
 import { MyRosterView, TacticsView, TeamView } from "./components/Team";
 import { TrainingView } from "./components/Training";
@@ -35,6 +36,9 @@ function App() {
   const [version, setVersion] = useState(0);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [advancing, setAdvancing] = useState(false);
+  const [lastReport, setReport] = useState<{ date: string; day: DayResult } | null>(null);
+  const [nextErr, setNextErr] = useState<string | null>(null);
 
   const refresh = useCallback(() => {
     api<FranchiseWithManager>("/api/franchise")
@@ -61,6 +65,27 @@ function App() {
     setScreen("game");
     window.scrollTo(0, 0);
   }, [refresh]);
+
+  /** 상단 [다음]: 경기일이면 경기 준비 화면으로, 아니면 하루 진행 → 다음 날이 경기일이면 경기 준비, 훈련일이면 달력(말풍선) */
+  const next = useCallback(async () => {
+    if (advancing) return;
+    setAdvancing(true); setNextErr(null); setMenuOpen(false);
+    try {
+      const r = await api<NextResult>("/api/franchise/next", { body: {} });
+      if (r.action === "offseason") setView({ name: "offseason" });
+      else if (r.action === "gameday") setView({ name: "gameday" });
+      else {
+        setReport({ date: r.day.date, day: r.day });
+        setView(r.next === "gameday" ? { name: "gameday" } : r.next === "offseason" ? { name: "offseason" } : { name: "today" });
+      }
+      refresh();
+      window.scrollTo(0, 0);
+    } catch (e) {
+      setNextErr(String((e as Error).message));
+    } finally {
+      setAdvancing(false);
+    }
+  }, [advancing, refresh]);
 
   const finishSplash = useCallback(() => setScreen("title"), []);
   const openSettings = useCallback(() => setSettingsOpen(true), []);
@@ -90,6 +115,8 @@ function App() {
     case "league": body = <LeagueSection tab={view.tab} />; break;
     case "training": body = <TrainingView />; break;
     case "today": body = <><SubTabs items={SCHEDULE_TABS} current="today" /><TodayView /></>; break;
+    case "gameday": body = <><SubTabs items={SCHEDULE_TABS} current="gameday" /><GameDayView /></>; break;
+    case "news": body = <NewsView key={view.date ?? "latest"} initialDate={view.date} />; break;
     case "schedule": body = <><SubTabs items={SCHEDULE_TABS} current="schedule" /><ScheduleView /></>; break;
     case "live": body = <LiveGameView sessionId={view.sessionId} />; break;
     case "office": body = <OfficeView />; break;
@@ -101,7 +128,7 @@ function App() {
   const offseason = franchise?.phase === "offseason";
 
   return (
-    <AppContext.Provider value={{ go, refresh, version, userTeamId: franchise?.userTeamId ?? null, openSettings }}>
+    <AppContext.Provider value={{ go, refresh, version, userTeamId: franchise?.userTeamId ?? null, openSettings, next, advancing, lastReport, setReport }}>
       <div className="game" style={{ ["--team" as string]: ts.primary }}>
         <header className="game-header">
           <div className="gh-top">
@@ -128,7 +155,10 @@ function App() {
             <div className="gh-search"><PlayerSearch /></div>
             {franchise && (offseason
               ? <button className="gh-advance" onClick={() => go({ name: "offseason" })}>비시즌 진행 ▶</button>
-              : <button className="gh-advance" onClick={() => go({ name: "today" })}>오늘 진행 ▶</button>)}
+              : <button className={`gh-advance ${franchise.today === "gameday" ? "gameday" : ""}`} disabled={advancing} onClick={next}
+                  title={franchise.today === "gameday" ? "오늘은 경기일 — 경기 준비 화면으로" : "저장된 훈련 계획으로 하루 진행"}>
+                  {advancing ? "진행 중…" : "다음 ▶"}{franchise.today === "gameday" && !advancing && <small className="gh-adv-tag">경기일</small>}
+                </button>)}
             <div className="gh-menu">
               <button className="gh-icon" onClick={() => setMenuOpen((o) => !o)} aria-label="메뉴">☰</button>
               {menuOpen && (
@@ -144,7 +174,7 @@ function App() {
           <nav className="gh-nav" aria-label="게임 메뉴">
             {SECTIONS.filter((s) => s.key !== "offseason" || offseason).map((s) => (
               <button key={s.key} className={section === s.key ? "on" : ""} onClick={() => go(s.view)}>
-                <span>{s.icon}</span>{s.label}{s.key === "offseason" && <i className="dot" />}
+                <span>{s.icon}</span>{s.label}{(s.key === "offseason" || (s.key === "trade" && (franchise?.pendingOffers ?? 0) > 0)) && <i className="dot" />}
               </button>
             ))}
           </nav>
@@ -156,7 +186,10 @@ function App() {
               저장된 게임이 없습니다. <button className="primary" onClick={() => setScreen("newgame")}>새로 시작</button>
             </div>
           ) : (
-            <div className="col" style={{ gap: 16 }}>{body}</div>
+            <div className="col" style={{ gap: 16 }}>
+              {nextErr && <div className="error" onClick={() => setNextErr(null)}>{nextErr}</div>}
+              {body}
+            </div>
           )}
         </main>
 

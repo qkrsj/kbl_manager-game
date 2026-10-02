@@ -10,6 +10,9 @@
 import type { Pool, PoolClient } from "pg";
 import type { DefenseScheme, PaceStyle, ThreeReliance } from "./coaches";
 
+import { ensureNewsSchema } from "./news";
+import { ensureTradeOfferSchema } from "./trades";
+
 type Db = Pool | PoolClient;
 
 export type PlayStyle = "run" | "three" | "defense" | "inside" | "balanced";
@@ -77,6 +80,9 @@ export async function ensureManagerSchema(db: Db) {
   for (const n of [1, 2, 3]) {
     await db.query(`ALTER TABLE team_tactics ADD COLUMN IF NOT EXISTS option${n}_player_id INTEGER REFERENCES players(id) ON DELETE SET NULL`);
   }
+  // 뉴스 · 다른 팀이 보낸 트레이드 제안
+  await ensureNewsSchema(db);
+  await ensureTradeOfferSchema(db);
 }
 
 export async function loadManagerProfile(db: Db): Promise<ManagerProfile | null> {

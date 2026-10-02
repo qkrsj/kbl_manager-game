@@ -585,7 +585,7 @@ export function LiveGameView({ sessionId }: { sessionId: string }) {
                 </div>
               )}
               <div className="row" style={{ marginTop: 8 }}>
-                <button className="primary" onClick={() => go({ name: "today" })}>달력으로 (다음 날 진행)</button>
+                <button className="primary" onClick={() => go({ name: "today" })}>달력으로 (상단 다음 ▶으로 진행)</button>
               </div>
             </Card>
           )}

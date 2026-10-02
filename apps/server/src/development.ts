@@ -39,6 +39,11 @@ export const TRAINING_FOCUS: Record<TrainingFocus, { label: string; attrs: AttrK
   conditioning: { label: "체력·스피드", attrs: ["stamina", "speed", "strength"] },
 };
 
+// 부상 확률 기준값 (선수 1명 기준) — 경기: 30분 뛸 때, 훈련: '보통' 강도 하루
+// 2026-10 조정: 부상이 너무 잦아 약 1/3 줄임 — 경기 0.004→0.0027, 훈련 0.0012→0.0008 (팀당 시즌 약 4건 → 2.5건 안팎)
+const GAME_INJURY_BASE = 0.0027;
+const TRAINING_INJURY_BASE = 0.0008;
+
 const INTENSITY: Record<TrainingIntensity, { gain: number; fatigueCost: number; injuryMult: number; label: string }> = {
   light: { gain: 0.6, fatigueCost: 4, injuryMult: 0.3, label: "가볍게" },
   normal: { gain: 1.0, fatigueCost: 8, injuryMult: 1, label: "보통" },
@@ -111,7 +116,7 @@ export interface DevelopmentChange {
  */
 export async function processDailyDevelopment(
   db: Db, date: string, userTeamId: number, userPlan: TrainingPlan, playedToday: Set<number>
-): Promise<{ changes: DevelopmentChange[]; injuries: { name: string; teamId: number | null; days: number }[] }> {
+): Promise<{ changes: DevelopmentChange[]; injuries: { playerId: number; name: string; teamId: number | null; days: number }[] }> {
   const players = await loadLeaguePlayers(db, date);
   const progressRes = await db.query(`SELECT player_id, training_progress FROM player_condition`);
   const progressMap = new Map<number, Record<string, number>>(progressRes.rows.map((r) => [r.player_id, r.training_progress ?? {}]));
@@ -124,7 +129,7 @@ export async function processDailyDevelopment(
 
   const updates: PendingUpdate[] = [];
   const changes: DevelopmentChange[] = [];
-  const injuries: { name: string; teamId: number | null; days: number }[] = [];
+  const injuries: { playerId: number; name: string; teamId: number | null; days: number }[] = [];
 
   // AI 팀 계획: 팀 평균 피로도가 높으면 휴식
   const teamFatigue = new Map<number, number[]>();
@@ -163,10 +168,10 @@ export async function processDailyDevelopment(
       fatigue += INTENSITY[plan.intensity].fatigueCost;
 
       // 강도 높은 훈련 중 부상
-      const injuryProb = 0.0012 * INTENSITY[plan.intensity].injuryMult * (0.5 + p.fatigue / 60) * (mine ? injuryMultiplier(manager) : 1);
+      const injuryProb = TRAINING_INJURY_BASE * INTENSITY[plan.intensity].injuryMult * (0.5 + p.fatigue / 60) * (mine ? injuryMultiplier(manager) : 1);
       if (Math.random() < injuryProb) {
         const days = 3 + Math.floor(Math.random() * 10);
-        injuries.push({ name: p.name, teamId: p.teamId, days });
+        injuries.push({ playerId: p.id, name: p.name, teamId: p.teamId, days });
         updates.push({ playerId: p.id, fatigue: Math.max(0, Math.min(100, fatigue)), progress, attrChanges: {}, injuredUntil: addDays(date, days) });
         continue;
       }
@@ -252,7 +257,10 @@ export interface GameLine {
 /**
  * 경기 후 처리: 피로도 누적, 경험치 획득·레벨업, 경기 중 부상.
  */
-export async function processPostGame(db: Db, date: string, lines: GameLine[], isPlayoff: boolean): Promise<DevelopmentChange[]> {
+export async function processPostGame(
+  db: Db, date: string, lines: GameLine[], isPlayoff: boolean,
+  injuriesOut?: { playerId: number; name: string; teamId: number; days: number }[]
+): Promise<DevelopmentChange[]> {
   const ids = lines.filter((l) => l.min > 0).map((l) => l.playerId);
   if (ids.length === 0) return [];
   const res = await db.query(
@@ -305,8 +313,10 @@ export async function processPostGame(db: Db, date: string, lines: GameLine[], i
 
     // 피로도 누적 + 경기 중 부상
     const fatigue = Math.min(100, Number(r.fatigue ?? 0) + l.min * 0.9);
-    const injuryProb = 0.004 * (l.min / 30) * ((r.injury_proneness ?? 60) / 75) * (1 + Number(r.fatigue ?? 0) / 100) * (mine ? injuryMultiplier(manager) : 1);
-    const injuredUntil = Math.random() < injuryProb ? addDays(date, 2 + Math.floor(Math.random() * 18)) : null;
+    const injuryProb = GAME_INJURY_BASE * (l.min / 30) * ((r.injury_proneness ?? 60) / 75) * (1 + Number(r.fatigue ?? 0) / 100) * (mine ? injuryMultiplier(manager) : 1);
+    const injuryDays = Math.random() < injuryProb ? 2 + Math.floor(Math.random() * 18) : 0;
+    const injuredUntil = injuryDays ? addDays(date, injuryDays) : null;
+    if (injuryDays) injuriesOut?.push({ playerId: l.playerId, name: l.name, teamId: l.teamId, days: injuryDays });
 
     await db.query(
       `INSERT INTO player_condition (player_id, xp, xp_level, fatigue, injured_until) VALUES ($1,$2,$3,$4,$5)

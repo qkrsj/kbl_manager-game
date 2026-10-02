@@ -8,6 +8,7 @@ import type { Franchise, Standing, LeaderBoard, RosterPlayer, Payroll, Coach } f
 import { teamStyle } from "../teamColors";
 import { ManagerCard, useManagerOptions } from "./NewGame";
 import type { ManagerProfileInput } from "./NewGame";
+import { LatestHeadlines } from "./News";
 import "./newgame.css";
 import "./hub.css";
 
@@ -15,7 +16,7 @@ import "./hub.css";
 // 섹션 구성 (상단 메뉴)
 // ============================================================
 
-export type SectionKey = "home" | "myteam" | "teams" | "trade" | "league" | "training" | "schedule" | "office" | "offseason";
+export type SectionKey = "home" | "myteam" | "teams" | "trade" | "league" | "news" | "training" | "schedule" | "office" | "offseason";
 
 export const SECTIONS: { key: SectionKey; label: string; icon: string; view: View }[] = [
   { key: "home", label: "홈", icon: "🏠", view: { name: "dashboard" } },
@@ -23,6 +24,7 @@ export const SECTIONS: { key: SectionKey; label: string; icon: string; view: Vie
   { key: "teams", label: "다른 팀", icon: "🏀", view: { name: "teams" } },
   { key: "trade", label: "트레이드", icon: "🔁", view: { name: "trade" } },
   { key: "league", label: "순위·기록", icon: "🏆", view: { name: "league" } },
+  { key: "news", label: "뉴스", icon: "📰", view: { name: "news" } },
   { key: "training", label: "훈련", icon: "💪", view: { name: "training" } },
   { key: "schedule", label: "달력·일정", icon: "📅", view: { name: "today" } },
   { key: "office", label: "감독실", icon: "🎽", view: { name: "office" } },
@@ -36,7 +38,8 @@ export function sectionOf(v: View): SectionKey | null {
     case "teams": case "team": return "teams";
     case "league": return "league";
     case "training": return "training";
-    case "today": case "schedule": case "live": return "schedule";
+    case "today": case "schedule": case "live": case "gameday": return "schedule";
+    case "news": return "news";
     case "office": return "office";
     case "trade": return "trade";
     case "offseason": return "offseason";
@@ -64,6 +67,7 @@ export const MYTEAM_TABS: { label: string; view: View }[] = [
 ];
 export const SCHEDULE_TABS: { label: string; view: View }[] = [
   { label: "달력·오늘", view: { name: "today" } },
+  { label: "경기 준비", view: { name: "gameday" } },
   { label: "전체 일정·결과", view: { name: "schedule" } },
 ];
 
@@ -134,7 +138,7 @@ function Emblem({ name, size = 40 }: { name: string; size?: number }) {
 // ============================================================
 
 export function HubHome() {
-  const { go } = useApp();
+  const { go, next, advancing } = useApp();
   const { data, error } = useApi<Dashboard>("/api/dashboard");
   const { data: training } = useApi<{ plan: { mode: string; focus: string; intensity: string }; focuses: { key: string; label: string }[];
     recentChanges: { log_date: string; name: string; label: string; delta: number; reason: string }[] }>("/api/franchise/training");
@@ -188,7 +192,9 @@ export function HubHome() {
                 <i>VS</i>
                 <span>{teamStyle(t.nextGame.away).short}</span><Emblem name={t.nextGame.away} size={34} />
               </div>
-              <button className="hero-btn" onClick={() => go({ name: "today" })}>{data.todayGame ? "경기 준비 ▶" : "오늘 진행 ▶"}</button>
+              {data.todayGame
+                ? <button className="hero-btn" onClick={() => go({ name: "gameday" })}>경기 준비 ▶</button>
+                : <button className="hero-btn" disabled={advancing} onClick={next}>다음 ▶</button>}
             </>
           ) : <div className="hero-next-label">남은 경기가 없습니다</div>}
         </div>
@@ -303,6 +309,7 @@ export function HubHome() {
         </Tile>
 
         <Tile title="리그 소식" icon="📰" className="span-2">
+          <LatestHeadlines />
           {(() => {
             const results = (allGames ?? []).filter((g) => g.home_score !== null).slice(-6).reverse();
             const items = [

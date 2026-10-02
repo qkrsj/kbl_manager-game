@@ -54,6 +54,83 @@ function PlayerPick({ p, on, onToggle, side }: { p: TP; on: boolean; onToggle: (
   );
 }
 
+interface OfferPlayer { id: number; name: string; overall: number; positionGroup: string; age: number; teamId: number | null }
+interface Offer {
+  id: number; teamId: number; teamName: string; offerDate: string; expiresDate: string; status: string; note: string | null; resolvedDate: string | null;
+  gives: OfferPlayer[]; wants: OfferPlayer[];
+  aiGain: number | null; userGain: number | null;          // 제안할 때의 양 팀 평가
+  evaluation: (Evaluation & { error?: string }) | null;     // 지금 기준 (규정 위반 여부 확인용)
+}
+const OFFER_STATUS: Record<string, string> = { pending: "답변 대기", accepted: "수락 · 성사", rejected: "거절", expired: "기한 만료", withdrawn: "상대가 철회" };
+
+/** 다른 팀이 우리 팀에 보낸 트레이드 제안 */
+function TradeOffers({ onDone }: { onDone: () => void }) {
+  const { refresh } = useApp();
+  const { data, reload } = useApi<Offer[]>("/api/trade/offers");
+  const [msg, setMsg] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  if (!data) return null;
+  const pending = data.filter((o) => o.status === "pending");
+  const recent = data.filter((o) => o.status !== "pending").slice(0, 5);
+  async function respond(o: Offer, accept: boolean) {
+    setBusy(true);
+    try {
+      const r = await api<{ executed: boolean; message: string }>(`/api/trade/offers/${o.id}`, { body: { accept } });
+      setMsg(r.message);
+      reload(); refresh(); onDone();
+    } catch (e) {
+      setMsg(String((e as Error).message));
+    } finally {
+      setBusy(false);
+    }
+  }
+  const names = (ps: OfferPlayer[]) => ps.map((p) => `${p.name}(${p.overall})`).join(" + ");
+  return (
+    <Card title={<span>📨 받은 트레이드 제안 {pending.length > 0 && <span className="pill red">{pending.length}</span>}</span>}>
+      {pending.length === 0 && <p className="muted small" style={{ margin: 0 }}>지금 답할 제안이 없습니다. 시즌 중(트레이드 마감 전)에 다른 팀이 우리 선수를 원하면 제안이 옵니다.</p>}
+      {pending.map((o) => {
+        const ts = teamStyle(o.teamName);
+        const ev = o.evaluation;
+        return (
+          <div key={o.id} className="offer" style={{ ["--team" as string]: ts.primary }}>
+            <div className="offer-head">
+              <span className="emblem" style={{ width: 34, height: 34, background: ts.primary, fontSize: 10 }}>{ts.abbr}</span>
+              <div><b>{o.teamName}</b><small>{formatDate(o.offerDate)} 제안 · {formatDate(o.expiresDate)}까지 답변</small></div>
+            </div>
+            <div className="trade-summary">
+              <div><span className="muted small">우리가 받는 선수</span><b>{names(o.gives)}</b></div>
+              <span className="trade-arrow">⇄</span>
+              <div><span className="muted small">상대가 원하는 선수</span><b>{names(o.wants)}</b></div>
+            </div>
+            <div className="trade-meters">
+              <Meter label="우리 팀 평가" gain={o.userGain ?? ev?.user.gainPct ?? 0} />
+              <Meter label={`${ts.short} 평가${ev?.ai ? ` (${ev.ai.modeLabel})` : ""}`} gain={o.aiGain ?? ev?.ai.gainPct ?? 0} />
+            </div>
+            {ev?.error && <p className="bad small">{ev.error}</p>}
+            {ev && !ev.error && (ev.ruleError || ev.windowError) && <p className="bad small">⛔ {ev.windowError ?? ev.ruleError}</p>}
+            <p className="small muted" style={{ margin: 0 }}>상대가 먼저 낸 제안이라 기한 안에 수락하면 이 조건 그대로 성사됩니다 (규정 위반만 아니면).</p>
+            <div className="row" style={{ justifyContent: "flex-end" }}>
+              <button disabled={busy} onClick={() => respond(o, false)}>거절</button>
+              <button className="primary" disabled={busy} onClick={() => respond(o, true)}>수락</button>
+            </div>
+          </div>
+        );
+      })}
+      {msg && <div className="notice" style={{ marginTop: 8 }}>{msg}</div>}
+      {recent.length > 0 && (
+        <details className="offer-history">
+          <summary className="small muted">지난 제안 {recent.length}건</summary>
+          <table><tbody>
+            {recent.map((o) => (
+              <tr key={o.id}><td className="small muted">{formatDate(o.offerDate)}</td><td className="small">{teamStyle(o.teamName).short}: {names(o.gives)} ⇄ {names(o.wants)}</td><td className="small">{OFFER_STATUS[o.status] ?? o.status}</td></tr>
+            ))}
+          </tbody></table>
+        </details>
+      )}
+    </Card>
+  );
+}
+
 /** 트레이드: 상대 팀 고르기 → 보낼 선수·받을 선수 체크 → 양 팀 평가를 보고 제안 */
 export function TradeView() {
   const { refresh } = useApp();
@@ -114,6 +191,8 @@ export function TradeView() {
         <span className="spacer" />
         <span className="small">우리 팀 상황: <b>{data.me.modeLabel}</b> ({data.me.rank}위)</span>
       </div>
+
+      <TradeOffers onDone={() => { reload(); reloadHistory(); }} />
 
       <Card title="트레이드 상대">
         <div className="trade-teams">
