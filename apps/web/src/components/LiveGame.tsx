@@ -1,15 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Loading, ErrorBox, Card, Rating, useApp, Bar } from "./common";
+import { Loading, ErrorBox, Card, useApp, Bar } from "./common";
 import { api, PACE_LABEL, THREE_LABEL, DEFENSE_LABEL, REASON_LABEL } from "../api";
 import type { DevChange } from "../api";
 import { teamStyle } from "../teamColors";
+import { LineupCourt } from "./LineupCourt";
+import type { CourtItem } from "./LineupCourt";
+import { assignSlots } from "../lineup";
 import "./live.css";
 
 // ============================================================
 // 서버 데이터 타입
 // ============================================================
 
-interface LivePlayer { name: string; positionGroup: string; isForeign: boolean; overall: number; targetMinutes: number; energy: number; fouls: number }
+interface LivePlayer { name: string; position: string; positionGroup: string; isForeign: boolean; overall: number; targetMinutes: number; energy: number; fouls: number }
 interface LiveBox { name: string; MIN: number; PTS: number; REB: number; AST: number; STL: number; BLK: number; TOV: number; PF: number; FGM: number; FGA: number; TPM: number; TPA: number; FTM: number; FTA: number }
 interface LiveSide {
   name: string; score: number; quarterScores: number[]; onCourt: string[]; manualLineup: string[] | null;
@@ -197,16 +200,37 @@ function TimeoutPanel({ state, quarter, onApply, onClose, busy, mode }: {
 }) {
   const mine = state[state.userSide];
   const opp = state[state.userSide === "home" ? "away" : "home"];
-  const [selected, setSelected] = useState<string[] | null>(mine.manualLineup);
+  const initial = () => {
+    const base = mine.manualLineup ?? mine.onCourt;
+    return assignSlots(base.map((n) => ({ key: n, position: mine.players.find((p) => p.name === n)?.position ?? "" }))).filter((n): n is string => !!n);
+  };
+  const [slots, setSlots] = useState<string[]>(initial);
+  const [manual, setManual] = useState(!!mine.manualLineup);
   const [tactics, setTactics] = useState<Record<string, unknown>>({});
-  const foreignSelected = (selected ?? []).filter((n) => mine.players.find((p) => p.name === n)?.isForeign).length;
-  const lineupError = selected && (selected.length !== 5 ? `5명을 선택하세요 (현재 ${selected.length}명)` : foreignSelected > maxForeign(quarter) ? `${quarterLabel(quarter)}에는 외국선수 최대 ${maxForeign(quarter)}명` : null);
+  const byName = (n: string) => mine.players.find((p) => p.name === n);
+  const foreignSelected = slots.filter((n) => byName(n)?.isForeign).length;
+  const lineupError = manual && (slots.length !== 5 ? `5명이 필요합니다 (현재 ${slots.length}명)`
+    : foreignSelected > maxForeign(quarter) ? `${quarterLabel(quarter)}에는 외국선수 최대 ${maxForeign(quarter)}명 (현재 ${foreignSelected}명)`
+    : slots.some((n) => (byName(n)?.fouls ?? 0) >= 5) ? "5반칙 퇴장 선수는 뛸 수 없습니다" : null);
   const cur = { pace: paceKey(mine.paceFactor), three: threeKey(mine.context.threeWeightMultiplier), def: mine.context.defenseScheme, dbl: mine.context.doubleTeamTarget ?? "", reb: !!mine.context.reboundEmphasis };
   const val = <T,>(k: string, d: T) => (k in tactics ? tactics[k] as T : d);
-  function toggle(name: string) {
-    const base = selected ?? [...mine.onCourt];
-    setSelected(base.includes(name) ? base.filter((n) => n !== name) : [...base, name]);
+  /** 칸에 선수 놓기: 코트 위 선수끼리는 자리 바꾸기, 벤치 선수는 그 칸의 선수와 교체 */
+  function place(slot: number, name: string) {
+    const next = [...slots];
+    const from = next.indexOf(name);
+    if (from >= 0) [next[from], next[slot - 1]] = [next[slot - 1], next[from]];
+    else next[slot - 1] = name;
+    setSlots(next);
+    setManual(true);
   }
+  const toItem = (p: LivePlayer): CourtItem => ({
+    key: p.name, name: p.name, position: p.position, overall: p.overall, foreign: p.isForeign,
+    disabled: p.fouls >= 5, disabledLabel: "퇴장",
+    note: <span className={p.fouls >= 4 ? "bad" : ""}>파울 {p.fouls}</span>,
+    detail: <Bar value={p.energy} color={p.energy < 50 ? "red" : p.energy < 70 ? "orange" : "green"} />,
+  });
+  const courtSlots = slots.map((n) => { const p = byName(n); return p ? toItem(p) : null; });
+  const bench = mine.players.filter((p) => !slots.includes(p.name)).sort((a, b) => Number(a.fouls >= 5) - Number(b.fouls >= 5) || b.energy - a.energy || b.overall - a.overall);
   return (
     <div className="timeout">
       <div className="timeout-head">
@@ -214,7 +238,7 @@ function TimeoutPanel({ state, quarter, onApply, onClose, busy, mode }: {
         <button className="small" onClick={onClose}>닫기 (변경 없이 계속)</button>
       </div>
       <p className="small muted" style={{ margin: "4px 0 0" }}>
-        여기서 고른 5명은 바로 코트에 들어가 다음 교체 시점(5분 단위)까지 뛰고, 그 뒤로는 출전시간 설정에 맞춰 자동으로 교체됩니다.
+        벤치 선수를 코트의 포지션 칸으로 끌어다 놓거나 (선수 → 칸 순서로 클릭) 교체하세요. 코트 위 선수끼리 끌면 자리만 바뀝니다. 여기서 정한 5명은 바로 코트에 들어가 다음 교체 시점(5분 단위)까지 뛰고, 그 뒤로는 출전시간 설정에 맞춰 자동으로 교체됩니다.
         작전타임이 아닐 때는 교체할 수 없습니다.
       </p>
       <div className="timeout-grid">
@@ -236,29 +260,16 @@ function TimeoutPanel({ state, quarter, onApply, onClose, busy, mode }: {
           <label><input type="checkbox" checked={val("reboundEmphasis", cur.reb)} onChange={(e) => setTactics({ ...tactics, reboundEmphasis: e.target.checked })} /> 리바운드 강조</label>
         </div>
         <div>
-          <div className="row" style={{ justifyContent: "space-between" }}>
-            <b>코트 위 5명 {selected ? "(직접 지정)" : "(자동 로테이션)"}</b>
-            {selected && <button className="small" onClick={() => setSelected(null)}>자동으로</button>}
+          <div className="row" style={{ justifyContent: "space-between", marginBottom: 8 }}>
+            <b>코트 위 5명 {manual ? "(직접 지정)" : "(자동 로테이션)"}</b>
+            {manual && <button className="small" onClick={() => { setSlots(initial()); setManual(false); }}>되돌리기 · 자동으로</button>}
           </div>
-          <div className="lineup-pick">
-            {[...mine.players].sort((a, b) => Number(mine.onCourt.includes(b.name)) - Number(mine.onCourt.includes(a.name)) || b.overall - a.overall).map((p) => {
-              const on = (selected ?? mine.onCourt).includes(p.name);
-              const out = p.fouls >= 5;
-              return (
-                <button key={p.name} className={`lp ${on ? "on" : ""}`} disabled={out} onClick={() => toggle(p.name)}>
-                  <Rating value={p.overall} />
-                  <span className="lp-name">{p.name}<small>{p.positionGroup}{p.isForeign ? " · 외국" : ""}</small></span>
-                  <span className="lp-energy"><Bar value={p.energy} color={p.energy < 50 ? "red" : p.energy < 70 ? "orange" : "green"} /></span>
-                  <span className={`lp-fouls ${p.fouls >= 4 ? "bad" : ""}`}>{out ? "퇴장" : `파울 ${p.fouls}`}</span>
-                </button>
-              );
-            })}
-          </div>
+          <LineupCourt slots={courtSlots} pool={bench.map(toItem)} poolTitle={`벤치 ${bench.length}명 (체력순)`} onPlace={place} />
           {lineupError && <p className="bad small">{lineupError}</p>}
         </div>
       </div>
       <div className="row" style={{ justifyContent: "flex-end", marginTop: 10 }}>
-        <button className="primary" disabled={busy || !!lineupError} onClick={() => onApply({ lineup: selected, tactics: Object.keys(tactics).length ? tactics : undefined })}>
+        <button className="primary" disabled={busy || !!lineupError} onClick={() => onApply({ lineup: manual ? slots : null, tactics: Object.keys(tactics).length ? tactics : undefined })}>
           적용하고 경기 재개 ▶
         </button>
       </div>

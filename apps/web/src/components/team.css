@@ -58,3 +58,4 @@
   .mr-min { grid-column: 1 / -1; }
   .opt-grid { grid-template-columns: 1fr; }
 }
+.mr-slot { display: inline-block; margin-right: 5px; padding: 0 5px; border-radius: 4px; background: #0f172a; color: #fff; font-size: 10px; letter-spacing: 0.05em; }

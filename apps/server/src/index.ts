@@ -156,7 +156,7 @@ async function teamRoster(teamId: number) {
       id: p.id, name: p.name, position: p.position, positionGroup: p.positionGroup, nationality: p.nationality,
       contractType: p.contractType, age: p.age, heightCm: e?.height_cm ? Number(e.height_cm) : null,
       overall: p.ratings.overall, offense: p.ratings.offense, defense: p.ratings.defense, potential: p.potential,
-      fatigue: Math.round(p.fatigue), injuredUntil: p.injuredUntil, role: p.role, minutesTarget: p.minutesTarget,
+      fatigue: Math.round(p.fatigue), injuredUntil: p.injuredUntil, role: p.role, minutesTarget: p.minutesTarget, lineupSlot: p.lineupSlot,
       offensePriority: p.offensePriority, salaryKrw: e?.salary_krw ?? null, salaryUsd: e?.salary_usd ?? null,
       faYear: e?.fa_year ?? null, contractSource: e?.source ?? null, xp: e?.xp ?? 0, xpLevel: e?.xp_level ?? 0,
       personalFocus: e?.personal_focus ?? null, draftYear: e?.draft_year, draftPick: e?.draft_overall_pick,
@@ -496,20 +496,26 @@ app.get("/api/franchise/roster", route(async () => {
  */
 app.put("/api/franchise/roster", route(async (req) => {
   const f = await getFranchise(pool);
-  const players: { playerId: number; role: string; minutesTarget: number | null; offensePriority: number | null }[] = req.body.players ?? [];
+  const players: { playerId: number; role: string; minutesTarget: number | null; offensePriority: number | null; lineupSlot?: number | null }[] = req.body.players ?? [];
   const starters = players.filter((p) => p.role === "starter");
+  const slots = starters.map((p) => p.lineupSlot).filter((x): x is number => !!x);
+  if (new Set(slots).size !== slots.length) throw new Error("같은 포지션 칸에 두 명을 넣을 수 없습니다");
   const bench = players.filter((p) => p.role === "bench");
   if (starters.length !== 5) throw new Error(`선발은 정확히 5명이어야 합니다 (현재 ${starters.length}명)`);
   if (bench.length < 5) throw new Error(`후보는 최소 5명이어야 합니다 (현재 ${bench.length}명)`);
   const own = await pool.query(`SELECT id FROM players WHERE team_id=$1`, [f.userTeamId]);
   const ownIds = new Set(own.rows.map((r) => r.id));
   if (players.some((p) => !ownIds.has(p.playerId))) throw new Error("우리 팀 선수가 아닌 선수가 포함되어 있습니다");
+  const foreignStarters = await pool.query(
+    `SELECT COUNT(*) AS n FROM players WHERE id = ANY($1::int[]) AND is_foreign_import`, [starters.map((p) => p.playerId)]
+  );
+  if (Number(foreignStarters.rows[0].n) > 1) throw new Error("1쿼터에는 외국선수가 1명만 뛸 수 있어 선발 외국선수는 1명까지입니다");
   const total = players.filter((p) => p.role !== "inactive").reduce((a, p) => a + (Number(p.minutesTarget) || 0), 0);
   await pool.query(`DELETE FROM player_roster_settings WHERE team_id = $1`, [f.userTeamId]);
   for (const p of players) {
     await pool.query(
-      `INSERT INTO player_roster_settings (team_id, player_id, role, minutes_target, offense_priority) VALUES ($1,$2,$3,$4,$5)`,
-      [f.userTeamId, p.playerId, p.role, p.minutesTarget, p.offensePriority]
+      `INSERT INTO player_roster_settings (team_id, player_id, role, minutes_target, offense_priority, lineup_slot) VALUES ($1,$2,$3,$4,$5,$6)`,
+      [f.userTeamId, p.playerId, p.role, p.minutesTarget, p.offensePriority, p.role === "starter" ? p.lineupSlot ?? null : null]
     );
   }
   return { ok: true, totalMinutes: total, warning: Math.abs(total - 200) > 15 ? `목표 출전시간 합계가 ${total}분입니다 (경기당 200분 기준 — 실제 출전시간은 비율대로 배분됩니다)` : null };

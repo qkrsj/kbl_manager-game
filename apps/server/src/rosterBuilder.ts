@@ -36,6 +36,7 @@ export interface LeaguePlayer {
   role: string | null;
   minutesTarget: number | null;
   offensePriority: number | null;
+  lineupSlot: number | null;          // 선발 코트 위치 1=PG 2=SG 3=SF 4=PF 5=C
   sim: Omit<SimPlayer, "perGameMin">;
 }
 
@@ -101,7 +102,7 @@ export async function loadLeaguePlayers(db: Db, onDate: string, opts: { includeF
             sp.paint_accuracy, sp.mid_accuracy, sp.three_accuracy, sp.ft_accuracy, sp.usage_percentile,
             sp.pts_percentile, sp.base_attrs,
             COALESCE(pc.fatigue, 0) AS fatigue, pc.injured_until,
-            prs.role, prs.minutes_target, prs.offense_priority
+            prs.role, prs.minutes_target, prs.offense_priority, prs.lineup_slot
      FROM players p
      JOIN player_attributes pa ON pa.player_id = p.id
      JOIN player_sim_profile sp ON sp.player_id = p.id
@@ -127,6 +128,7 @@ export async function loadLeaguePlayers(db: Db, onDate: string, opts: { includeF
       age: ageOn(r.birth_date, onDate), attrs, potential: r.potential, workEthic: r.work_ethic ?? 65,
       ratings, fatigue: Number(r.fatigue), injuredUntil: r.injured_until ? formatDbDate(r.injured_until) : null,
       role: r.role, minutesTarget: r.minutes_target !== null ? Number(r.minutes_target) : null, offensePriority: r.offense_priority,
+      lineupSlot: r.lineup_slot ?? null,
       sim: {
         playerId: r.id, name: r.name, position: r.position ?? "", nationality: r.nationality, positionGroup, isForeign,
         attrs: toDisplayAttrs(attrs), internals: adjustedInternals(r, attrs, ratings.offense), overall: ratings.overall,
@@ -277,5 +279,10 @@ export async function buildTeamSetup(ctx: BuildContext, teamId: number, opponent
     roster = [...roster, ...extra];
   }
 
-  return { name: teamName, roster, context, paceFactor, startingEnergy };
+  // 선발 5명 (유저가 지정한 경우, 코트 위치 PG→C 순서) — 경기 시작과 3쿼터 시작에 이 5명이 나온다
+  const starters = isUser && userConfigured
+    ? members.filter((p) => p.role === "starter").sort((a, b) => (a.lineupSlot ?? 9) - (b.lineupSlot ?? 9)).map((p) => p.name)
+    : undefined;
+
+  return { name: teamName, roster, context, paceFactor, startingEnergy, starters };
 }

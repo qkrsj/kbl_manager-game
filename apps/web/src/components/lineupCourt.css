@@ -1,0 +1,79 @@
+/* 코트 위 포지션 칸에 선수 배치 (선발 명단 · 작전타임 교체) */
+.lc { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(240px, 1fr); gap: 14px; align-items: start; }
+.lc-court {
+  position: relative; aspect-ratio: 500 / 470; border-radius: 14px; overflow: hidden;
+  background: linear-gradient(180deg, #d59a5d 0%, #c98b4f 100%);
+  box-shadow: inset 0 0 0 3px rgba(255, 255, 255, 0.85), 0 10px 24px rgba(0, 0, 0, 0.15);
+}
+.lc-lines { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.lc-line { fill: none; stroke: rgba(255, 255, 255, 0.9); stroke-width: 3; }
+.lc-line.thick { stroke-width: 5; }
+.lc-paint { fill: color-mix(in srgb, var(--team, #c8102e) 55%, transparent); }
+.lc-hoop { fill: none; stroke: #f97316; stroke-width: 4; }
+
+.lc-slot {
+  position: absolute; transform: translate(-50%, -50%); width: 36%; min-height: 64px;
+  display: flex; flex-direction: column; align-items: stretch; gap: 3px; cursor: pointer;
+  transition: transform 0.15s ease;
+}
+.lc-label {
+  align-self: center; font-family: "Anton", Impact, sans-serif; font-size: 13px; letter-spacing: 0.08em; line-height: 1;
+  color: #fff; background: rgba(15, 23, 42, 0.8); padding: 3px 9px; border-radius: 999px;
+}
+.lc-card, .lc-empty {
+  position: relative; border-radius: 10px; padding: 6px 8px; background: var(--panel); color: var(--text);
+  border: 2px solid transparent; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+}
+.lc-card { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 7px; align-items: center; cursor: grab; }
+.lc-card:active { cursor: grabbing; }
+.lc-empty {
+  display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 46px;
+  background: rgba(255, 255, 255, 0.35); border: 2px dashed rgba(255, 255, 255, 0.95); color: #3b2410; font-weight: 700; font-size: 13px;
+  box-shadow: none;
+}
+.lc-empty small { font-weight: 500; font-size: 10px; opacity: 0.8; }
+.lc-text { display: flex; flex-direction: column; min-width: 0; line-height: 1.25; }
+.lc-text b { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lc-text small { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lc-text small.fit-0 { color: var(--good); font-weight: 700; }
+.lc-text small.fit-1 { color: var(--warn); font-weight: 700; }
+.lc-text small.fit-2 { color: var(--bad); font-weight: 700; }
+.lc-f { font-style: normal; font-size: 10px; margin-left: 4px; padding: 0 4px; border-radius: 4px; background: #7c3aed; color: #fff; vertical-align: 1px; }
+.lc-detail { grid-column: 1 / -1; margin-top: 3px; }
+.lc-x {
+  position: absolute; top: -8px; right: -8px; width: 22px; height: 22px; padding: 0; border-radius: 50%;
+  font-size: 14px; line-height: 1; background: var(--panel); border: 1px solid var(--border); color: var(--muted);
+}
+.lc-x:hover { color: var(--bad); border-color: var(--bad); }
+
+.lc-slot.sel .lc-card, .lc-slot.over .lc-card, .lc-slot.over .lc-empty { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 40%, transparent), 0 4px 12px rgba(0, 0, 0, 0.25); }
+.lc-slot.over { transform: translate(-50%, -50%) scale(1.04); }
+.lc-slot.hint-0 .lc-label { background: var(--good); }
+.lc-slot.hint-1 .lc-label { background: var(--warn); }
+.lc-slot.hint-2 .lc-label { background: var(--bad); }
+
+.lc-pool {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 10px;
+  display: flex; flex-direction: column; gap: 8px; transition: border-color 0.15s ease;
+}
+.lc-pool.over { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 6%, var(--panel)); }
+.lc-pool-head { display: flex; flex-direction: column; }
+.lc-pool-head small { color: var(--muted); font-size: 11px; }
+.lc-pool-list { display: flex; flex-direction: column; gap: 5px; max-height: 470px; overflow-y: auto; }
+.lc-chip {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) 76px; column-gap: 8px; align-items: center;
+  padding: 6px 8px; border-radius: 9px; background: var(--panel-2); border: 1px solid var(--border); cursor: grab; user-select: none;
+}
+.lc-chip .lc-detail { grid-column: 3; margin: 0; }
+.lc-chip:hover { border-color: var(--accent); }
+.lc-chip.sel { border-color: var(--accent); background: var(--accent-soft); }
+.lc-chip.disabled { opacity: 0.5; cursor: not-allowed; }
+
+@media (max-width: 760px) {
+  .lc { grid-template-columns: 1fr; }
+  .lc-slot { width: 39%; }
+  .lc-text b { font-size: 12px; }
+  .lc-card .rating { display: none; }
+  .lc-card { grid-template-columns: minmax(0, 1fr); }
+  .lc-pool-list { max-height: 320px; }
+}

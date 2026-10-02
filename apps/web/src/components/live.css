@@ -53,7 +53,9 @@
 .timeout { background: var(--panel); border: 2px solid #e11d48; border-radius: 14px; padding: 14px 16px; box-shadow: 0 12px 30px rgba(225, 29, 72, 0.15); }
 .timeout-head { display: flex; justify-content: space-between; align-items: center; }
 .timeout-head h3 { margin: 0; }
-.timeout-grid { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 16px; margin-top: 10px; }
+.timeout-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; margin-top: 10px; }
+.timeout-grid > .col:first-child { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px 16px; align-items: center; }
+.timeout-grid > .col:first-child > b { grid-column: 1 / -1; }
 .timeout-grid label { display: flex; justify-content: space-between; gap: 8px; align-items: center; font-size: 13px; }
 .lineup-pick { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 6px; margin-top: 8px; }
 .lp {

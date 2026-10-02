@@ -55,7 +55,7 @@ function sessionState(s: Session, extra: { developmentChanges?: DevelopmentChang
       context: team.setup.context,
       paceFactor: team.setup.paceFactor,
       players: team.setup.roster.map((p) => ({
-        name: p.name, positionGroup: p.positionGroup, isForeign: p.isForeign, overall: p.overall,
+        name: p.name, position: p.position, positionGroup: p.positionGroup, isForeign: p.isForeign, overall: p.overall,
         targetMinutes: p.perGameMin, energy: Math.round(team.energy.get(p.name) ?? 100),
         fouls: team.box.players.get(p.name)?.PF ?? 0,
       })),

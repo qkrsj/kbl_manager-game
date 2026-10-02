@@ -72,6 +72,8 @@ export async function ensureManagerSchema(db: Db) {
   await db.query(`ALTER TABLE player_training_focus ALTER COLUMN focus DROP NOT NULL`);
   await db.query(`ALTER TABLE player_training_focus ADD COLUMN IF NOT EXISTS intensity TEXT`);
   await db.query(`ALTER TABLE player_training_focus ADD COLUMN IF NOT EXISTS mode TEXT`);
+  // 선발 라인업의 코트 위치 (1=PG 2=SG 3=SF 4=PF 5=C)
+  await db.query(`ALTER TABLE player_roster_settings ADD COLUMN IF NOT EXISTS lineup_slot SMALLINT`);
   for (const n of [1, 2, 3]) {
     await db.query(`ALTER TABLE team_tactics ADD COLUMN IF NOT EXISTS option${n}_player_id INTEGER REFERENCES players(id) ON DELETE SET NULL`);
   }

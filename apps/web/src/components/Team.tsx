@@ -3,6 +3,9 @@ import "./team.css";
 import { useApi, Loading, ErrorBox, Card, Rating, PlayerLink, FatigueBar, useApp } from "./common";
 import { api, salaryLabel, krw, usd, CONTRACT_TYPE_LABEL, PACE_LABEL, THREE_LABEL, DEFENSE_LABEL } from "../api";
 import type { RosterPlayer, Payroll, Coach } from "../api";
+import { LineupCourt } from "./LineupCourt";
+import type { CourtItem } from "./LineupCourt";
+import { assignSlots, slotFit, SLOT_LABELS } from "../lineup";
 
 function RosterTable({ roster, date }: { roster: RosterPlayer[]; date?: string }) {
   return (
@@ -57,17 +60,29 @@ export function TeamView({ id }: { id: number }) {
 /** 감독 AI 기준 추천값: 출전시간 상위 5명 선발, 나머지 출전시간 있는 선수 후보 */
 function suggestedSetting(p: RosterPlayer, rankByMinutes: number) {
   const role = p.suggestedMinutes > 0 ? (rankByMinutes < 5 ? "starter" : "bench") : rankByMinutes < 12 ? "bench" : "inactive";
-  return { role, minutesTarget: p.suggestedMinutes, offensePriority: null as number | null };
+  return { role, minutesTarget: p.suggestedMinutes, offensePriority: null as number | null, lineupSlot: null as number | null };
 }
 
 function suggestedAll(roster: RosterPlayer[]) {
   const order = [...roster].sort((a, b) => b.suggestedMinutes - a.suggestedMinutes);
-  const out: Record<number, { role: string; minutesTarget: number | null; offensePriority: number | null }> = {};
+  const out: Record<number, RoleEdit> = {};
   order.forEach((p, i) => { out[p.id] = suggestedSetting(p, i); });
-  return out;
+  return withSlots(roster, out, false);
 }
 
-type RoleEdit = { role: string; minutesTarget: number | null; offensePriority: number | null };
+type RoleEdit = { role: string; minutesTarget: number | null; offensePriority: number | null; lineupSlot: number | null };
+
+/** 선발 선수마다 코트 칸(PG~C)을 하나씩 — 저장된 칸은 지키고(keepSaved), 나머지는 포지션에 맞게 자동 배치 */
+function withSlots(roster: RosterPlayer[], edit: Record<number, RoleEdit>, keepSaved = true): Record<number, RoleEdit> {
+  const starters = roster.filter((p) => edit[p.id]?.role === "starter");
+  const fixed = new Map<number, number>();
+  if (keepSaved) starters.forEach((p) => { const s = edit[p.id].lineupSlot; if (s) fixed.set(p.id, s); });
+  const order = assignSlots(starters.map((p) => ({ key: p.id, position: p.position })), fixed);
+  const next: Record<number, RoleEdit> = {};
+  for (const p of roster) next[p.id] = { ...edit[p.id], lineupSlot: null };
+  order.forEach((id, i) => { if (id !== null) next[id] = { ...next[id], lineupSlot: i + 1 }; });
+  return next;
+}
 
 function MinutesRow({ p, e, onChange, onMove, date, offseason, onRelease }: {
   p: RosterPlayer; e: RoleEdit; date?: string; offseason: boolean;
@@ -80,7 +95,7 @@ function MinutesRow({ p, e, onChange, onMove, date, offseason, onRelease }: {
       <Rating value={p.overall} />
       <div className="mr-name">
         <span><PlayerLink id={p.id} name={p.name} />{p.contractType !== "domestic" && <span className="pill gray">{CONTRACT_TYPE_LABEL[p.contractType]}</span>}{injured && <span className="pill red">부상</span>}</span>
-        <small>{p.position} · {p.age}세{p.stats ? ` · 평균 ${p.stats.min}분 ${p.stats.pts}점` : ""}</small>
+        <small>{e.role === "starter" && e.lineupSlot ? <b className="mr-slot">{SLOT_LABELS[e.lineupSlot - 1]}</b> : null}{p.position} · {p.age}세{p.stats ? ` · 평균 ${p.stats.min}분 ${p.stats.pts}점` : ""}</small>
       </div>
       <div className="mr-fatigue" title={`피로도 ${Math.round(p.fatigue)}`}><FatigueBar fatigue={p.fatigue} /></div>
       {e.role !== "inactive" ? (
@@ -117,9 +132,9 @@ export function MyRosterView() {
     if (!anyConfigured) { setEdit(suggestedAll(roster)); return; }
     const next: Record<number, RoleEdit> = {};
     roster.forEach((p) => {
-      next[p.id] = { role: p.role ?? "bench", minutesTarget: p.minutesTarget ?? p.suggestedMinutes, offensePriority: p.offensePriority };
+      next[p.id] = { role: p.role ?? "bench", minutesTarget: p.minutesTarget ?? p.suggestedMinutes, offensePriority: p.offensePriority, lineupSlot: p.lineupSlot };
     });
-    setEdit(next);
+    setEdit(withSlots(roster, next));
     setDirty(false);
   }, [roster]);
 
@@ -128,7 +143,7 @@ export function MyRosterView() {
 
   const roleOf = (p: RosterPlayer) => edit[p.id]?.role ?? "bench";
   const byMin = (a: RosterPlayer, b: RosterPlayer) => (Number(edit[b.id]?.minutesTarget) || 0) - (Number(edit[a.id]?.minutesTarget) || 0) || b.overall - a.overall;
-  const starters = roster.filter((p) => roleOf(p) === "starter").sort(byMin);
+  const starters = roster.filter((p) => roleOf(p) === "starter").sort((a, b) => (edit[a.id]?.lineupSlot ?? 9) - (edit[b.id]?.lineupSlot ?? 9) || byMin(a, b));
   const bench = roster.filter((p) => roleOf(p) === "bench").sort(byMin);
   const inactive = roster.filter((p) => roleOf(p) === "inactive").sort((a, b) => b.overall - a.overall);
   const active = [...starters, ...bench];
@@ -138,11 +153,54 @@ export function MyRosterView() {
   const offseason = fr?.phase === "offseason";
 
   const set = (id: number, patch: Partial<RoleEdit>) => { setEdit({ ...edit, [id]: { ...edit[id], ...patch } }); setDirty(true); };
-  const move = (p: RosterPlayer, role: string) => {
-    const cur = Number(edit[p.id]?.minutesTarget) || 0;
-    const minutesTarget = role === "inactive" ? 0 : role === "starter" ? Math.max(cur, 24) : cur === 0 ? 10 : Math.min(cur, 24);
-    set(p.id, { role, minutesTarget });
+  const minutesFor = (cur: number, role: string) => (role === "inactive" ? 0 : role === "starter" ? Math.max(cur, 24) : cur === 0 ? 10 : Math.min(cur, 24));
+  const slotHolder = (slot: number) => starters.find((p) => edit[p.id]?.lineupSlot === slot) ?? null;
+
+  /** 코트 칸에 선수 놓기: 선발끼리는 자리 바꾸기, 후보를 놓으면 원래 있던 선수와 역할·출전시간을 맞바꿈 */
+  const place = (slot: number, id: number) => {
+    const moving = edit[id];
+    const occupant = slotHolder(slot);
+    if (!moving || occupant?.id === id) return;
+    const next = { ...edit };
+    if (moving.role === "starter") {
+      if (occupant) next[occupant.id] = { ...next[occupant.id], lineupSlot: moving.lineupSlot };
+      next[id] = { ...moving, lineupSlot: slot };
+    } else {
+      const myMin = Number(moving.minutesTarget) || 0;
+      if (occupant) {
+        const theirMin = Number(next[occupant.id].minutesTarget) || 0;
+        next[occupant.id] = { ...next[occupant.id], role: "bench", lineupSlot: null, minutesTarget: moving.role === "inactive" ? minutesFor(theirMin, "bench") : myMin };
+        next[id] = { ...moving, role: "starter", lineupSlot: slot, minutesTarget: theirMin };
+      } else {
+        next[id] = { ...moving, role: "starter", lineupSlot: slot, minutesTarget: minutesFor(myMin, "starter") };
+      }
+    }
+    setEdit(next); setDirty(true);
   };
+  const move = (p: RosterPlayer, role: string) => {
+    if (role === "starter") {
+      // 빈 칸 중 포지션이 가장 맞는 곳, 빈 칸이 없으면 가장 맞는 칸의 선수와 교체
+      const open = [1, 2, 3, 4, 5].filter((s) => !slotHolder(s));
+      const pool = open.length ? open : [1, 2, 3, 4, 5];
+      const best = pool.reduce((a, b) => (slotFit(p.position, b) < slotFit(p.position, a) ? b : a));
+      place(best, p.id);
+      return;
+    }
+    const cur = Number(edit[p.id]?.minutesTarget) || 0;
+    set(p.id, { role, minutesTarget: minutesFor(cur, role), lineupSlot: null });
+  };
+  const toItem = (p: RosterPlayer): CourtItem => {
+    const m = Number(edit[p.id]?.minutesTarget) || 0;
+    const injured = !!(p.injuredUntil && fr?.date && p.injuredUntil > fr.date);
+    return {
+      key: String(p.id), name: p.name, position: p.position, overall: p.overall, foreign: p.contractType === "foreign",
+      note: roleOf(p) === "inactive" ? "엔트리 제외" : `${m}분${injured ? " · 부상" : ""}`,
+      detail: p.fatigue > 0 ? <FatigueBar fatigue={p.fatigue} /> : undefined,
+    };
+  };
+  const courtSlots = [1, 2, 3, 4, 5].map((s) => { const h = slotHolder(s); return h ? toItem(h) : null; });
+  const foreignStarters = starters.filter((p) => p.contractType === "foreign").length;
+  const awkward = starters.filter((p) => slotFit(p.position, edit[p.id]?.lineupSlot ?? 3) >= 2);
 
   async function save() {
     setErr(null); setMsg(null);
@@ -207,6 +265,19 @@ export function MyRosterView() {
       <ErrorBox error={err} />
       {msg && <div className="notice">{msg}</div>}
 
+      <Card title="선발 라인업 — 코트에 끌어다 놓기">
+        <LineupCourt
+          slots={courtSlots}
+          pool={[...bench, ...inactive].map(toItem)}
+          poolTitle={`후보 ${bench.length}명${inactive.length ? ` · 엔트리 제외 ${inactive.length}명` : ""}`}
+          onPlace={(slot, key) => place(slot, Number(key))}
+          onRemove={(slot) => { const h = slotHolder(slot); if (h) move(h, "bench"); }}
+          footer={<p className="small muted" style={{ margin: 0 }}>후보를 선발 칸에 놓으면 원래 선수와 <b>역할·출전시간을 맞바꿉니다</b>. 코트의 선수를 이 목록으로 끌면 후보로 내려갑니다.</p>}
+        />
+        {foreignStarters > 1 && <p className="bad small">1쿼터에는 외국선수가 1명만 뛸 수 있습니다 — 선발 외국선수는 1명까지 (현재 {foreignStarters}명)</p>}
+        {awkward.length > 0 && <p className="small" style={{ color: "var(--warn)" }}>포지션이 어색한 배치: {awkward.map((p) => p.name).join(", ")} — 뛸 수는 있지만 칸에 맞는 선수가 좋습니다</p>}
+      </Card>
+
       <div className="mr-dist" title="출전시간 분배">
         {active.map((p) => {
           const m = Number(edit[p.id]?.minutesTarget) || 0;
@@ -215,7 +286,7 @@ export function MyRosterView() {
       </div>
 
       <Card title={`선발 ${starters.length}명`}>
-        <div className="mr-list">{starters.map(row)}{starters.length === 0 && <p className="muted small">후보에서 ▲ 선발 버튼으로 올리세요</p>}</div>
+        <div className="mr-list">{starters.map(row)}{starters.length === 0 && <p className="muted small">위 코트에 선수를 끌어다 놓으세요</p>}</div>
       </Card>
       <Card title={`후보 ${bench.length}명`}>
         <div className="mr-list">{bench.map(row)}</div>

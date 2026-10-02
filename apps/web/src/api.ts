@@ -59,6 +59,7 @@ export interface RosterPlayer {
   injuredUntil: string | null;
   role: string | null;
   minutesTarget: number | null;
+  lineupSlot: number | null;
   offensePriority: number | null;
   salaryKrw: number | null;
   salaryUsd: number | null;

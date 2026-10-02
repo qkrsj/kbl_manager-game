@@ -63,6 +63,7 @@ export interface TeamGameSetup {
   context: TeamContext;
   paceFactor: number;             // 0.9(느리게) / 1.0 / 1.1(빠르게)
   startingEnergy?: Record<string, number>; // 시즌 누적 피로도 반영한 경기 시작 체력 (기본 100)
+  starters?: string[];            // 지정 선발 5명 (경기 시작·3쿼터 시작에 투입). 없으면 출전시간 순
 }
 
 export interface PlayByPlay {
@@ -330,6 +331,8 @@ export class LiveGame {
   constructor(home: TeamGameSetup, away: TeamGameSetup) {
     this.home = this.initTeam(home);
     this.away = this.initTeam(away);
+    // 경기 전에도 선발 5명이 보이도록 (작전 화면·중계 코트)
+    for (const t of [this.home, this.away]) t.onCourt = this.pickLineup(t, false);
   }
 
   private initTeam(setup: TeamGameSetup): LiveTeam {
@@ -464,11 +467,34 @@ export class LiveGame {
   private pickLineup(t: LiveTeam, closing: boolean): SimPlayer[] {
     const avail = this.available(t);
     if (t.manualLineup && this.segmentIndex > t.manualUntilSegment) t.manualLineup = null; // 지정 구간이 지나면 자동 교체로
+    // 경기 시작(1쿼터)과 후반 시작(3쿼터)에는 지정 선발 5명 — 퇴장·체력 바닥인 선수는 로테이션으로 채움
+    const startOfHalf = this.segmentIndex === 0 || this.segmentIndex === 4;
+    if (!t.manualLineup && startOfHalf && t.setup.starters?.length) {
+      const picked = t.setup.starters
+        .map((n) => avail.find((p) => p.name === n))
+        .filter((p): p is SimPlayer => !!p && (this.segmentIndex === 0 || (t.energy.get(p.name) ?? 100) >= 50));
+      const maxF = this.quarter === 2 || this.quarter === 3 ? 2 : 1;
+      const legal: SimPlayer[] = [];
+      for (const p of picked) if (!p.isForeign || legal.filter((x) => x.isForeign).length < maxF) legal.push(p);
+      if (legal.length < 5) {
+        const fill = this.rotationLineup(t, avail.filter((p) => !legal.includes(p)), false);
+        for (const p of fill) {
+          if (legal.length >= 5) break;
+          if (!p.isForeign || legal.filter((x) => x.isForeign).length < maxF) legal.push(p);
+        }
+      }
+      if (legal.length === 5) return legal;
+    }
     if (t.manualLineup) {
       const manual = t.manualLineup.map((n) => avail.find((p) => p.name === n)).filter((p): p is SimPlayer => !!p);
       if (manual.length === 5 && !validateManualLineup(manual, this.quarter)) return manual;
       t.manualLineup = null; // 파울아웃 등으로 무효화되면 자동 로테이션으로 복귀
     }
+    return this.rotationLineup(t, avail, closing);
+  }
+
+  /** 출전시간·체력 기준 자동 로테이션 */
+  private rotationLineup(t: LiveTeam, avail: SimPlayer[], closing: boolean): SimPlayer[] {
     const candidates: (RotationCandidate & { sim: SimPlayer })[] = avail.map((p) => ({
       ...p,
       targetMinutes: p.perGameMin,
